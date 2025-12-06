@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CalpiCAD - Outil de Calpinage Technique</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <!-- SheetJS CDN -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <!-- jsPDF CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body>
+    <div class="grid-background"></div>
+    
+    <header>
+        <div class="container">
+            <div class="logo">HB.</div>
+            <nav>
+                <a href="#" class="active">CalpiCAD</a>
+                <a href="#" id="nav-doc">Documentation</a>
+                <a href="#" id="nav-contact">Contact</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        <section id="intro">
+            <h1>CalpiCAD_v2.0</h1>
+            <p class="subtitle">Optimisation de découpe de panneaux. Architecture minimaliste.</p>
+        </section>
+
+        <section id="upload-section">
+            <div class="card">
+                <div class="card-header">
+                    <h2>01 // IMPORT DATA</h2>
+                    <div class="tech-line"></div>
+                </div>
+                <div class="card-body">
+                    <div class="actions-top" style="margin-bottom: 16px; text-align: right;">
+                        <button id="download-template-btn" class="text-btn" style="font-size: 14px; border-bottom: 1px solid #4A6FA5;">
+                            <span class="icon">↓</span> TÉLÉCHARGER GABARIT EXCEL
+                        </button>
+                    </div>
+                    <div id="drop-zone" class="drop-zone">
+                        <div class="icon">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M12 16L12 4" stroke="#E0E0E0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <path d="M8 8L12 4L16 8" stroke="#E0E0E0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <path d="M20 16V20H4V16" stroke="#E0E0E0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </div>
+                        <p>Glisser-déposer votre fichier Excel (.xlsx) ici</p>
+                        <span class="or-divider">- OU -</span>
+                        <label for="file-upload" class="btn">Sélectionner fichier</label>
+                        <input type="file" id="file-upload" accept=".xlsx, .xls" hidden>
+                    </div>
+                    <div class="file-info" id="file-info" style="display: none;">
+                        <span id="file-name">filename.xlsx</span>
+                        <button id="remove-file" class="text-btn">×</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="optimization-controls" class="card" style="display:none; margin-top: 20px;">
+            <div class="control-header">
+                <h3>02 // OPTIMISATION</h3>
+                <div class="status-badge" id="opt-status">Prêt</div>
+            </div>
+            <div class="control-body">
+                <div class="opt-actions">
+                    <button id="toggle-grain" class="btn" title="Rotation autorisée (Sens du fil ignoré)" style="margin-right: 10px;">
+                        <span class="icon">↻</span> Sens du fil
+                    </button>
+                    <button id="start-deep-opt" class="btn primary">
+                        <span class="icon">⚡</span> Lancer l'Optimisation
+                    </button>
+                </div>
+                <div class="opt-stats">
+                    <div class="stat-item">
+                        <span class="label">Itérations</span>
+                        <span class="value" id="opt-iter">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">Meilleure Solution</span>
+                        <span class="value" id="opt-best-panels">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">Utilisation</span>
+                        <span class="value" id="opt-best-util">0%</span>
+                    </div>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="opt-progress"></div>
+                </div>
+                <div id="loading-message" class="loading-message"></div>
+            </div>
+        </section>
+
+        <section id="results-section" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                <div class="header-row">
+                    <h2>03 // PIECES DETECTEES</h2>
+                </div>
+                <div class="tech-line"></div>
+            </div>
+                <div class="card-body">
+                    <div class="table-container">
+                        <table id="pieces-table">
+                            <thead>
+                                <tr>
+                                    <th>DENOMINATION</th>
+                                    <th>LONGUEUR</th>
+                                    <th>LARGEUR</th>
+                                    <th>EPAISSEUR</th>
+                                    <th>QTE</th>
+                                    <th>FINITION</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pieces-list">
+                                <!-- Generated via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="visualization-section" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <div class="header-row">
+                        <h2>04 // RENDU 2D</h2>
+                    </div>
+                    <div class="tech-line"></div>
+                </div>
+                <div class="card-body">
+                    <!-- Toolbar removed, button moved to header -->
+
+                    <div class="render-layout">
+                        <div class="panel-info-vertical">
+                            <div class="panel-nav" id="panel-nav">
+                                <button id="prev-panel" class="nav-btn">&lt;</button>
+                                <span id="panel-indicator">PANNEAU 1 / 1</span>
+                                <button id="next-panel" class="nav-btn">&gt;</button>
+                            </div>
+                            <div class="info-details">
+                                <span id="plaque-dims">PLAQUE: 2800x2070mm</span>
+                                <span id="material-info" style="color: #888; margin: 4px 0; display: block;">-</span>
+                                <span id="utilization-rate" class="highlight-text">UTILISATION: 0%</span>
+                            </div>
+                        </div>
+
+                        <div class="canvas-container">
+                            <canvas id="calpinage-canvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="export-section" style="display: none;">
+            <div class="actions">
+                <button id="download-pdf" class="btn secondary">
+                    <span class="icon">📄</span> TÉLÉCHARGER PDF
+                </button>
+                <button id="download-json" class="btn primary">
+                    <span class="icon">↓</span> TÉLÉCHARGER JSON
+                </button>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 CalpiCAD. Tous droits réservés.</p>
+            <div class="socials">
+                <a href="https://github.com/hugo-burnet" target="_blank" aria-label="GitHub Profile">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                    </svg>
+                </a>
+                <a href="https://www.linkedin.com/in/hugo-burnet-a11323309/" target="_blank" aria-label="LinkedIn Profile">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
+                    </svg>
+                </a>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Documentation Modal -->
+    <div id="doc-modal" class="modal" style="display: none;">
+        <div class="modal-content card">
+            <div class="modal-header">
+                <h2>// DOCUMENTATION</h2>
+                <button id="close-doc-modal" class="text-btn">×</button>
+            </div>
+            <div class="modal-body">
+                <h3>FORMAT DE FICHIER</h3>
+                <p>Le fichier importé doit être au format Excel (.xlsx ou .xls) et contenir les colonnes suivantes :</p>
+                
+                <div class="table-container" style="margin: 20px 0;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>DENOMINATION</th>
+                                <th>LONGUEUR</th>
+                                <th>LARGEUR</th>
+                                <th>EPAISSEUR</th>
+                                <th>QUANTITE</th>
+                                <th>FINITION</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>M1 - MONTANTS</td>
+                                <td>2000</td>
+                                <td>600</td>
+                                <td>19</td>
+                                <td>2</td>
+                                <td>ACACIA...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <p>Note : Les dimensions sont en millimètres (mm). Utilisez la virgule ou le point pour les décimales.</p>
+                
+                <h3>OPTIMISATION</h3>
+                <p><strong>Sens du fil :</strong></p>
+                <ul style="color: var(--text-secondary); margin-left: 20px; margin-bottom: 20px; font-size: 14px;">
+                    <li><span style="color: var(--accent-highlight);">↻</span> <strong>Rotation autorisée :</strong> Les pièces peuvent être tournées à 90° (Standard).</li>
+                    <li><span style="color: #FF9800;">⊘</span> <strong>Rotation interdite :</strong> Le sens du fil est respecté (pas de rotation).</li>
+                </ul>
+
+                <div class="actions" style="margin-top: 30px; justify-content: center;">
+                    <button id="download-template-modal-btn" class="btn primary">
+                        TÉLÉCHARGER LE GABARIT
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Contact Modal -->
+    <div id="contact-modal" class="modal" style="display: none;">
+        <div class="modal-content card" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2>// CONTACT</h2>
+                <button id="close-contact-modal" class="text-btn">×</button>
+            </div>
+            <div class="modal-body">
+                <p>Retrouvez-moi sur les plateformes suivantes :</p>
+                
+                <div class="contact-links" style="display: flex; flex-direction: column; gap: 15px; margin-top: 20px;">
+                    <a href="https://www.linkedin.com/in/hugo-burnet-a11323309/" target="_blank" class="btn secondary" style="text-align: center;">
+                        <span class="icon">in</span> LinkedIn
+                    </a>
+                    <a href="mailto:hgobrnt@gmail.com" class="btn secondary" style="text-align: center;">
+                        <span class="icon">✉</span> hgobrnt@gmail.com
+                    </a>
+                    <a href="https://hugo-burnet.github.io/cv-online/" target="_blank" class="btn secondary" style="text-align: center;">
+                        <span class="icon">📄</span> Curriculum Vitae
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="algo.js"></script>
+    <script src="interface.js"></script>
+</body>
+</html>
