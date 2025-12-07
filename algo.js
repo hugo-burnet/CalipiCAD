@@ -16,13 +16,13 @@ const CONFIG = {
         height: 2070
     },
     colors: {
-        piece: '#1A2A55',
+        piece: 'rgba(26, 42, 85, 0.5)', // Blue at 50% opacity
         pieceBorder: '#4A6FA5',
         text: '#E0E0E0',
         background: '#0a0a0a',
         cutLine: '#FF5555',
         highlight: '#4CAF50',
-        offcut: 'rgba(76, 175, 80, 0.15)',
+        offcut: 'rgba(76, 175, 80, 0.5)', // Green at 50% opacity
         offcutBorder: '#2E7D32'
     },
     algo: {

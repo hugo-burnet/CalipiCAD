@@ -460,6 +460,13 @@ class UIManager {
         const finalize = () => {
             this.stopMessageCycle();
             
+            // Set success message
+            if (this.els.loadingMsg) {
+                this.els.loadingMsg.textContent = "Chargement fini, merci de scroller";
+                this.els.loadingMsg.style.opacity = '1';
+                this.els.loadingMsg.style.color = 'var(--accent-highlight)';
+            }
+            
             // Reset UI Controls
             this.els.startBtn.innerHTML = '<span class="icon">⚡</span> Lancer l\'Optimisation';
             this.els.startBtn.classList.remove('danger');
@@ -581,9 +588,16 @@ class UIManager {
                 const minOffcutH = isMobile ? 80 : 100;
 
                 if (r.w > minOffcutW && r.h > minOffcutH) {
-                    ctx.fillStyle = '#666';
-                    ctx.font = isMobile ? `8px sans-serif` : `10px sans-serif`;
-                    ctx.fillText(`${Math.round(r.w)}x${Math.round(r.h)}`, (r.x + 10) * scale, (r.y + 20) * scale);
+                    ctx.fillStyle = '#FFFFFF'; // High contrast
+                    // Mobile: 3px (Reduced again), Desktop: 14px
+                    ctx.font = isMobile ? `3px sans-serif` : `14px sans-serif`;
+                    
+                    // Fix truncation: Use top baseline and add padding to "lower" the text into the box
+                    ctx.textBaseline = 'top'; 
+                    ctx.textAlign = 'left';
+                    
+                    const padding = 3; // Reduced padding to move text closer to corner
+                    ctx.fillText(`${Math.round(r.w)}x${Math.round(r.h)}`, r.x * scale + padding, r.y * scale + padding);
                 }
             });
         }
@@ -613,13 +627,13 @@ class UIManager {
                 const maxWidth = w - (padding * 2);
                 
                 // 2. Initial Font Size Calculation
-                // Mobile: Max 11px, desktop max 20px. 
-                let baseFs = isMobile ? 11 : 20;
+                // Mobile: Max 6px (50% of 11px), desktop max 20px. 
+                let baseFs = isMobile ? 6 : 20;
                 
                 // Heuristic: scale down if name is very long relative to width
                 // But don't go below minFs yet
                 let fs = baseFs;
-                const minFs = isMobile ? 8 : 10;
+                const minFs = isMobile ? 4 : 10;
 
                 ctx.font = `600 ${fs}px sans-serif`;
                 
@@ -655,7 +669,7 @@ class UIManager {
                     ctx.fillText(textToDraw, textX, textY);
                     
                     // Secondary Text (Dimensions)
-                    const secondaryFs = Math.max(7, fs * 0.85);
+                    const secondaryFs = Math.max(isMobile ? 4 : 7, fs * 0.85);
                     const dimY = textY + fs + 2;
                     
                     // Ensure enough height remains for dimensions
