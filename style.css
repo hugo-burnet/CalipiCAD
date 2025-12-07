@@ -911,4 +911,105 @@ footer a:hover {
     .burger-menu.active span:nth-child(3) {
         transform: translateY(-9px) rotate(-45deg);
     }
+
+    /* Fixes for Mobile Responsiveness */
+    .table-container {
+        width: 100%;
+        overflow-x: auto;
+        margin: 0;
+        padding: 0;
+    }
+
+    .canvas-container {
+        padding: var(--spacing-sm);
+        border-radius: 4px;
+        margin: 0;
+        width: 100%;
+        border: 1px solid var(--lines);
+    }
+
+    .panel-info-vertical {
+        max-width: 100%;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        margin: 0;
+        width: 100%;
+    }
+
+    .opt-stats {
+        grid-template-columns: 1fr;
+    }
+
+    /* 1. Buttons proportional & clickable (min 48px) */
+    .btn {
+        width: 100%;
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-right: 0;
+        margin-bottom: 10px;
+    }
+    
+    .btn:last-child {
+        margin-bottom: 0;
+    }
+
+    .nav-btn {
+        min-width: 48px;
+        min-height: 48px;
+    }
+    
+    /* 2. Center all elements */
+    .card-body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+    }
+    
+    .actions, .opt-actions {
+        justify-content: center;
+        flex-direction: column;
+        width: 100%;
+    }
+    
+    .opt-actions .btn {
+        margin-right: 0;
+    }
+
+    .header-row {
+        justify-content: center;
+        text-align: center;
+    }
+    
+    .file-info {
+        flex-direction: column;
+    }
+
+    /* Mobile Table Optimizations */
+    #pieces-table th, 
+    #pieces-table td {
+        font-size: 11px;
+        padding: 6px 4px;
+        white-space: nowrap;
+        text-align: left;
+    }
+
+    /* Mobile 2D Render Optimizations */
+    .panel-nav {
+        font-size: 13px;
+        gap: 8px;
+    }
+
+    .nav-btn {
+        width: 26px;
+        height: 26px;
+        font-size: 14px;
+    }
+
+    .info-details {
+        font-size: 12px;
+        padding: 0 var(--spacing-sm);
+    }
 }

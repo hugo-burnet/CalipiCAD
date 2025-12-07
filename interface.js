@@ -551,6 +551,7 @@ class UIManager {
         const panel = this.state.result.panels[this.state.currentPanelIndex];
         const plaque = window.CONFIG.plaque;
         const colors = window.CONFIG.colors;
+        const isMobile = window.innerWidth <= 768;
 
         // Auto-scale
         const containerW = this.els.vizSection.clientWidth - 40;
@@ -576,9 +577,12 @@ class UIManager {
                 ctx.strokeRect(r.x * scale, r.y * scale, r.w * scale, r.h * scale);
                 ctx.setLineDash([]);
                 
-                if (r.w > 200 && r.h > 100) {
+                const minOffcutW = isMobile ? 150 : 200;
+                const minOffcutH = isMobile ? 80 : 100;
+
+                if (r.w > minOffcutW && r.h > minOffcutH) {
                     ctx.fillStyle = '#666';
-                    ctx.font = `10px sans-serif`;
+                    ctx.font = isMobile ? `8px sans-serif` : `10px sans-serif`;
                     ctx.fillText(`${Math.round(r.w)}x${Math.round(r.h)}`, (r.x + 10) * scale, (r.y + 20) * scale);
                 }
             });
@@ -597,17 +601,99 @@ class UIManager {
             ctx.lineWidth = 1;
             ctx.strokeRect(x, y, w, h);
 
-            // Text
-            if(w > 40 && h > 20) {
+            // Text Rendering with smart scaling and truncation
+            const minPieceW = isMobile ? 30 : 40;
+            const minPieceH = isMobile ? 20 : 25; 
+
+            if(w > minPieceW && h > minPieceH) {
                 ctx.fillStyle = colors.text;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                const fs = Math.min(20, w/8);
+                
+                // 1. Calculate Constraints
+                const padding = isMobile ? 3 : 5;
+                const maxWidth = w - (padding * 2);
+                
+                // 2. Initial Font Size Calculation
+                // Mobile: Max 11px, desktop max 20px. 
+                let baseFs = isMobile ? 11 : 20;
+                
+                // Heuristic: scale down if name is very long relative to width
+                // But don't go below minFs yet
+                let fs = baseFs;
+                const minFs = isMobile ? 8 : 10;
+
                 ctx.font = `600 ${fs}px sans-serif`;
-                ctx.fillText(p.ref, x+w/2, y+h/2 - fs*0.6);
-                ctx.fillStyle = '#AAA';
-                ctx.font = `400 ${fs*0.8}px sans-serif`;
-                ctx.fillText(`${Math.round(p.width)}x${Math.round(p.height)}${p.rotation===90?' ↻':''}`, x+w/2, y+h/2 + fs*0.6);
+                
+                // 3. Adaptive Scaling & Truncation
+                let textToDraw = p.ref;
+                let textWidth = ctx.measureText(textToDraw).width;
+                
+                // If text is too wide, try reducing font size first (down to minFs)
+                while (textWidth > maxWidth && fs > minFs) {
+                    fs -= 0.5;
+                    ctx.font = `600 ${fs}px sans-serif`;
+                    textWidth = ctx.measureText(textToDraw).width;
+                }
+                
+                // If still too wide after shrinking font, truncate with ellipsis
+                if (textWidth > maxWidth) {
+                    const ellipsis = '..';
+                    while (textToDraw.length > 0 && ctx.measureText(textToDraw + ellipsis).width > maxWidth) {
+                        textToDraw = textToDraw.slice(0, -1);
+                    }
+                    textToDraw += ellipsis;
+                }
+
+                // 4. Positioning & Drawing
+                let textX, textY;
+
+                if (isMobile) {
+                    ctx.textAlign = 'left';
+                    ctx.textBaseline = 'top';
+                    textX = x + padding;
+                    textY = y + padding;
+                    
+                    ctx.fillText(textToDraw, textX, textY);
+                    
+                    // Secondary Text (Dimensions)
+                    const secondaryFs = Math.max(7, fs * 0.85);
+                    const dimY = textY + fs + 2;
+                    
+                    // Ensure enough height remains for dimensions
+                    if (h > (dimY - y) + secondaryFs) {
+                        ctx.fillStyle = '#AAA'; // Secondary color
+                        ctx.font = `400 ${secondaryFs}px sans-serif`;
+                        
+                        let dimText = `${Math.round(p.width)}x${Math.round(p.height)}${p.rotation===90?' ↻':''}`;
+                        // Check if dimensions fit, otherwise simplify
+                        if (ctx.measureText(dimText).width > maxWidth) {
+                             dimText = `${Math.round(p.width)}x${Math.round(p.height)}`;
+                        }
+                        // Only draw if it fits now
+                        if (ctx.measureText(dimText).width <= maxWidth) {
+                            ctx.fillText(dimText, textX, dimY);
+                        }
+                    }
+
+                } else {
+                    // Desktop Centered
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    textX = x + w/2;
+                    
+                    // Vertical centering calculation
+                    const secondaryFs = Math.max(10, fs * 0.8);
+                    const totalContentHeight = fs + secondaryFs + 4; // text + gap + dims
+                    const startY = y + (h - totalContentHeight) / 2;
+
+                    // Draw Name (top half of center)
+                    ctx.textBaseline = 'top';
+                    ctx.fillText(textToDraw, textX, startY);
+                    
+                    // Draw Dimensions (bottom half)
+                    ctx.fillStyle = '#AAA';
+                    ctx.font = `400 ${secondaryFs}px sans-serif`;
+                    ctx.fillText(`${Math.round(p.width)}x${Math.round(p.height)}${p.rotation===90?' ↻':''}`, textX, startY + fs + 4);
+                }
             }
         });
     }
