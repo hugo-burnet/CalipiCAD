@@ -99,8 +99,32 @@ class UIManager {
     init() {
         this.setupDragDrop();
         this.setupControls();
+        this.setupMobileMenu();
         this.updateGrainButton();
         console.log("CalpiCAD Interface Initialized");
+    }
+
+    setupMobileMenu() {
+        const burger = document.getElementById('burger-menu');
+        const nav = document.getElementById('main-nav');
+        const links = nav ? nav.querySelectorAll('a') : [];
+
+        if (burger && nav) {
+            burger.addEventListener('click', () => {
+                burger.classList.toggle('active');
+                nav.classList.toggle('nav-open');
+                document.body.style.overflow = nav.classList.contains('nav-open') ? 'hidden' : '';
+            });
+
+            // Close menu when clicking a link
+            links.forEach(link => {
+                link.addEventListener('click', () => {
+                    burger.classList.remove('active');
+                    nav.classList.remove('nav-open');
+                    document.body.style.overflow = '';
+                });
+            });
+        }
     }
 
     /* =========================================
