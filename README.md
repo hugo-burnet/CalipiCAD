@@ -13,7 +13,7 @@ CalpiCAD est une application web conçue pour optimiser le calpinage de pièces 
 - **Alertes Explicites** : Les lignes de fichier illisibles et les pièces trop grandes pour le panneau sont signalées au lieu d'être ignorées silencieusement.
 - **Statistiques Détaillées** : Obtenez des informations sur le taux d'utilisation du matériau et le nombre de panneaux nécessaires.
 - **Messages de Chargement Amusants** : Des phrases aléatoires s'affichent pendant l'optimisation pour rendre l'attente plus agréable.
-- **Export des Résultats** : Téléchargez les plans de coupe au format JSON ou PDF.
+- **Export des Résultats** : Téléchargez les plans de coupe au format JSON ou PDF. Chaque page PDF rappelle le format de plaque, le trait de scie et le bilan des coupes, et chaque pièce porte son nom et ses cotes de découpe.
 - **Interface Utilisateur Intuitive** : Une interface claire et réactive pour une expérience utilisateur optimale.
 
 ## Technologies Utilisées

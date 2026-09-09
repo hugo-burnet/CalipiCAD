@@ -1006,6 +1006,76 @@ class UIManager {
         if (this.els.exportSection) this.els.exportSection.style.display = 'none';
     }
     
+    /**
+     * Draws a piece's name and its cut dimensions inside its rectangle on the PDF canvas.
+     * Font sizes shrink to fit the box, so a small piece keeps a readable label instead of
+     * spilling over its neighbours; the dimensions line is dropped only if it truly cannot fit.
+     */
+    _drawPdfPieceLabel(ctx, piece, x, y, w, h) {
+        const padding = 10;
+        const maxW = w - padding * 2;
+        const maxH = h - padding * 2;
+        if (maxW <= 0 || maxH <= 0) return;
+
+        const name = String(piece.ref ?? '');
+        const dims = `${Math.round(piece.width)} x ${Math.round(piece.height)}${piece.rotation === 90 ? ' (pivote)' : ''}`;
+
+        const fit = (text, weight, startFs, minFs) => {
+            let fs = startFs;
+            ctx.font = `${weight} ${fs}px sans-serif`;
+            while (fs > minFs && ctx.measureText(text).width > maxW) {
+                fs -= 1;
+                ctx.font = `${weight} ${fs}px sans-serif`;
+            }
+            return fs;
+        };
+
+        const truncate = (text) => {
+            if (ctx.measureText(text).width <= maxW) return text;
+            let cut = text;
+            while (cut.length > 1 && ctx.measureText(cut + '..').width > maxW) cut = cut.slice(0, -1);
+            return cut + '..';
+        };
+
+        ctx.fillStyle = '#000';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        const cx = x + w / 2;
+        const gap = 5;
+        const MAX_FS = 34;
+        const MIN_FS = 8;
+
+        // Both lines must fit the HEIGHT too, not just the width: on a long flat piece the
+        // name would otherwise stay huge, blow the height budget, and nothing would be drawn.
+        // dims sits at 0.75x the name, so two lines need nameFs * 1.75 + gap <= maxH.
+        const twoLineCap = Math.floor((maxH - gap) / 1.75);
+
+        if (twoLineCap >= MIN_FS) {
+            const nameFs = fit(name, '600', Math.min(MAX_FS, twoLineCap), MIN_FS);
+            ctx.font = `600 ${nameFs}px sans-serif`;
+            const nameText = truncate(name);
+
+            const dimFs = Math.max(MIN_FS - 1, Math.round(nameFs * 0.75));
+            ctx.font = `400 ${dimFs}px sans-serif`;
+
+            if (ctx.measureText(dims).width <= maxW) {
+                const top = y + (h - (nameFs + gap + dimFs)) / 2;
+                ctx.font = `600 ${nameFs}px sans-serif`;
+                ctx.fillText(nameText, cx, top);
+                ctx.fillStyle = '#444';
+                ctx.font = `400 ${dimFs}px sans-serif`;
+                ctx.fillText(dims, cx, top + nameFs + gap);
+                return;
+            }
+        }
+
+        // Not enough room for two lines: the name alone, sized to whatever height is left.
+        const soloFs = fit(name, '600', Math.min(MAX_FS, Math.floor(maxH)), MIN_FS);
+        if (soloFs > maxH) return;
+        ctx.font = `600 ${soloFs}px sans-serif`;
+        ctx.fillText(truncate(name), cx, y + (h - soloFs) / 2);
+    }
+
     downloadPDF() {
          // (Keep existing PDF logic but use this.state.result)
          if(!this.state.result) return;
@@ -1029,11 +1099,11 @@ class UIManager {
              ctx.lineWidth = 2; ctx.strokeStyle='#000'; ctx.strokeRect(0,0,tempCanvas.width,tempCanvas.height);
              
              p.pieces.forEach(piece => {
-                ctx.fillStyle = '#DDD'; 
-                ctx.fillRect(piece.x*s, piece.y*s, piece.width*s, piece.height*s);
-                ctx.strokeRect(piece.x*s, piece.y*s, piece.width*s, piece.height*s);
-                ctx.fillStyle = '#000'; ctx.font = '30px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-                ctx.fillText(piece.ref, (piece.x+piece.width/2)*s, (piece.y+piece.height/2)*s);
+                const x = piece.x*s, y = piece.y*s, w = piece.width*s, h = piece.height*s;
+                ctx.fillStyle = '#DDD';
+                ctx.fillRect(x, y, w, h);
+                ctx.strokeRect(x, y, w, h);
+                this._drawPdfPieceLabel(ctx, piece, x, y, w, h);
              });
          };
  
@@ -1043,8 +1113,18 @@ class UIManager {
              doc.setFontSize(16);
              doc.text(`Panneau ${i+1}/${panels.length}`, 10, 15);
              doc.setFontSize(10);
-             doc.text(`${panel.material.thickness}mm ${panel.material.finish} - Util: ${panel.utilization.toFixed(1)}%`, 10, 20);
-             
+             doc.text(`Format : ${plaque.width} x ${plaque.height} mm  -  ${panel.material.thickness}mm ${panel.material.finish}  -  Util: ${panel.utilization.toFixed(1)}%`, 10, 20);
+
+             const offcuts = panel.offcuts || [];
+             const biggest = offcuts.reduce((max, o) => Math.max(max, o.area), 0);
+             const details = [
+                 `Trait de scie : ${plaque.kerf ?? 0} mm`,
+                 `${panel.pieces.length} pièce(s)`,
+                 `${panel.cutCount || 0} coupe(s)`,
+                 `Chutes : ${offcuts.length}${biggest > 0 ? ` (max ${(biggest / 1e6).toFixed(2)} m²)` : ''}`
+             ];
+             doc.text(details.join('  -  '), 10, 25);
+
              renderToTemp(i);
              const imgData = tempCanvas.toDataURL('image/png');
 
