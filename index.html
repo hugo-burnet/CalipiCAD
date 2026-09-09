@@ -78,6 +78,28 @@
                 <div class="status-badge" id="opt-status">Prêt</div>
             </div>
             <div class="control-body">
+                <div class="format-panel">
+                    <label class="format-label" for="format-preset">Format du panneau</label>
+                    <div class="format-row">
+                        <select id="format-preset" class="format-select">
+                            <option value="2800x2070">Mélaminé 2800 × 2070</option>
+                            <option value="2800x2100">Mélaminé 2800 × 2100</option>
+                            <option value="2440x1220">Panneau 2440 × 1220</option>
+                            <option value="2500x1250">Panneau 2500 × 1250</option>
+                            <option value="3050x1220">MDF / CP 3050 × 1220</option>
+                            <option value="3660x1220">MDF / CP 3660 × 1220</option>
+                            <option value="4100x1850">Grand format 4100 × 1850</option>
+                            <option value="custom">Personnalisé…</option>
+                        </select>
+                        <div class="format-custom" id="format-custom">
+                            <input type="number" id="format-width" class="format-input" min="1" max="20000" step="1" aria-label="Largeur du panneau en mm">
+                            <span class="format-x">×</span>
+                            <input type="number" id="format-height" class="format-input" min="1" max="20000" step="1" aria-label="Hauteur du panneau en mm">
+                            <span class="format-unit">mm</span>
+                        </div>
+                    </div>
+                    <div class="format-error" id="format-error"></div>
+                </div>
                 <div class="opt-actions">
                     <button id="toggle-grain" class="btn" title="Rotation autorisée (Sens du fil ignoré)" style="margin-right: 10px;">
                         <span class="icon">↻</span> Sens du fil

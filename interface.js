@@ -9,6 +9,10 @@
  */
 
 class UIManager {
+    // Panel dimension bounds, in mm.
+    static MIN_DIM = 1;
+    static MAX_DIM = 20000;
+
     constructor() {
         this.engine = new window.OptimizerEngine();
         this.state = {
@@ -66,6 +70,13 @@ class UIManager {
             grainToggleBtn: document.getElementById('toggle-grain'),
             startBtn: document.getElementById('start-deep-opt'),
             optStatus: document.getElementById('opt-status'),
+
+            // Panel format
+            formatPreset: document.getElementById('format-preset'),
+            formatCustom: document.getElementById('format-custom'),
+            formatWidth: document.getElementById('format-width'),
+            formatHeight: document.getElementById('format-height'),
+            formatError: document.getElementById('format-error'),
             
             // Progress / Feedback
             progressBar: document.getElementById('opt-progress'),
@@ -99,6 +110,7 @@ class UIManager {
     init() {
         this.setupDragDrop();
         this.setupControls();
+        this.setupFormatControls();
         this.setupMobileMenu();
         this.updateGrainButton();
         console.log("CalpiCAD Interface Initialized");
@@ -178,6 +190,111 @@ class UIManager {
 
         // Modals
         this.setupModals();
+    }
+
+    /* =========================================
+       PANEL FORMAT
+       ========================================= */
+    setupFormatControls() {
+        const { formatPreset, formatWidth, formatHeight } = this.els;
+        if (!formatPreset || !formatWidth || !formatHeight) return;
+
+        this.loadPlaqueFormat();
+
+        formatPreset.addEventListener('change', () => {
+            if (formatPreset.value === 'custom') {
+                this.toggleCustomFormat(true);
+                formatWidth.focus();
+                this.applyCustomFormat();
+            } else {
+                this.toggleCustomFormat(false);
+                const [w, h] = formatPreset.value.split('x').map(Number);
+                formatWidth.value = w;
+                formatHeight.value = h;
+                this.setPlaqueFormat(w, h);
+            }
+        });
+
+        [formatWidth, formatHeight].forEach(input => {
+            input.addEventListener('input', () => this.applyCustomFormat());
+        });
+    }
+
+    /** Restores the last used format (localStorage), falling back to CONFIG defaults. */
+    loadPlaqueFormat() {
+        const { formatPreset, formatWidth, formatHeight } = this.els;
+        let { width, height } = window.CONFIG.plaque;
+
+        try {
+            const saved = JSON.parse(localStorage.getItem('calpicad.plaque'));
+            if (saved && this.isValidDimension(saved.width) && this.isValidDimension(saved.height)) {
+                width = saved.width;
+                height = saved.height;
+            }
+        } catch (e) {
+            // Corrupted or unavailable storage: keep the defaults.
+        }
+
+        formatWidth.value = width;
+        formatHeight.value = height;
+
+        const preset = `${width}x${height}`;
+        const isPreset = [...formatPreset.options].some(o => o.value === preset);
+        formatPreset.value = isPreset ? preset : 'custom';
+        this.toggleCustomFormat(!isPreset);
+
+        this.setPlaqueFormat(width, height);
+    }
+
+    applyCustomFormat() {
+        const w = parseInt(this.els.formatWidth.value, 10);
+        const h = parseInt(this.els.formatHeight.value, 10);
+
+        if (!this.isValidDimension(w) || !this.isValidDimension(h)) {
+            this.showFormatError(`Dimensions invalides (entre ${UIManager.MIN_DIM} et ${UIManager.MAX_DIM} mm).`);
+            return;
+        }
+
+        this.showFormatError(null);
+        this.setPlaqueFormat(w, h);
+    }
+
+    isValidDimension(value) {
+        return Number.isFinite(value) && value >= UIManager.MIN_DIM && value <= UIManager.MAX_DIM;
+    }
+
+    setPlaqueFormat(width, height) {
+        window.CONFIG.plaque.width = width;
+        window.CONFIG.plaque.height = height;
+
+        try {
+            localStorage.setItem('calpicad.plaque', JSON.stringify({ width, height }));
+        } catch (e) {
+            // Storage unavailable (private mode): the format still applies for this session.
+        }
+    }
+
+    toggleCustomFormat(visible) {
+        this.els.formatCustom.classList.toggle('visible', visible);
+        if (!visible) this.showFormatError(null);
+    }
+
+    showFormatError(message) {
+        const el = this.els.formatError;
+        if (el) {
+            el.textContent = message || '';
+            el.classList.toggle('visible', Boolean(message));
+        }
+        // Block the optimization while the format is unusable.
+        if (this.els.startBtn && !this.state.isOptimizing) {
+            this.els.startBtn.disabled = Boolean(message);
+        }
+    }
+
+    setFormatControlsDisabled(disabled) {
+        [this.els.formatPreset, this.els.formatWidth, this.els.formatHeight].forEach(el => {
+            if (el) el.disabled = disabled;
+        });
     }
 
     setupModals() {
@@ -351,7 +468,8 @@ class UIManager {
         this.els.optStatus.textContent = "Calcul en cours...";
         this.els.optStatus.classList.add('running');
         this.els.grainToggleBtn.disabled = true;
-        
+        this.setFormatControlsDisabled(true);
+
         // Hide previous results
         this.els.vizSection.style.display = 'none';
         this.els.exportSection.style.display = 'none';
@@ -447,6 +565,8 @@ class UIManager {
     onComplete(result) {
         console.log("Optimization Complete. Result:", result);
         this.state.isOptimizing = false;
+        // Snapshot the format used, so changing it afterwards doesn't rescale an existing plan.
+        result.plaque = { ...window.CONFIG.plaque };
         this.state.result = result;
 
         // 1. Trigger Visual Completion
@@ -473,6 +593,7 @@ class UIManager {
             this.els.optStatus.textContent = "Terminé";
             this.els.optStatus.classList.remove('running');
             this.els.grainToggleBtn.disabled = false;
+            this.setFormatControlsDisabled(false);
 
             // Show Results
             this.state.currentPanelIndex = 0;
@@ -542,7 +663,7 @@ class UIManager {
         if (this.els.prevBtn) this.els.prevBtn.disabled = this.state.currentPanelIndex === 0;
         if (this.els.nextBtn) this.els.nextBtn.disabled = this.state.currentPanelIndex === total - 1;
         
-        const plaque = window.CONFIG.plaque;
+        const plaque = this.state.result.plaque || window.CONFIG.plaque;
         if(this.els.plaqueDims) this.els.plaqueDims.textContent = `PLAQUE: ${plaque.width}x${plaque.height}mm`;
         if(this.els.materialInfo) this.els.materialInfo.textContent = `${panel.material.thickness}mm - ${panel.material.finish}`;
         
@@ -556,7 +677,7 @@ class UIManager {
         const canvas = this.els.canvas;
         const ctx = canvas.getContext('2d');
         const panel = this.state.result.panels[this.state.currentPanelIndex];
-        const plaque = window.CONFIG.plaque;
+        const plaque = this.state.result.plaque || window.CONFIG.plaque;
         const colors = window.CONFIG.colors;
         const isMobile = window.innerWidth <= 768;
 
@@ -733,15 +854,17 @@ class UIManager {
          const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
          const panels = this.state.result.panels;
          
+         const plaque = this.state.result.plaque || window.CONFIG.plaque;
+
          const tempCanvas = document.createElement('canvas');
-         const scaleFactor = 2000 / window.CONFIG.plaque.width;
+         const scaleFactor = 2000 / plaque.width;
          tempCanvas.width = 2000;
-         tempCanvas.height = window.CONFIG.plaque.height * scaleFactor;
+         tempCanvas.height = plaque.height * scaleFactor;
          const ctx = tempCanvas.getContext('2d');
- 
+
          const renderToTemp = (pIdx) => {
              const p = panels[pIdx];
-             const s = tempCanvas.width / window.CONFIG.plaque.width;
+             const s = tempCanvas.width / plaque.width;
              ctx.fillStyle = '#FFF'; ctx.fillRect(0,0,tempCanvas.width,tempCanvas.height);
              ctx.lineWidth = 2; ctx.strokeStyle='#000'; ctx.strokeRect(0,0,tempCanvas.width,tempCanvas.height);
              
