@@ -14,6 +14,8 @@ class UIManager {
     static MAX_DIM = 20000;
     // Saw blade width, in mm.
     static MAX_KERF = 50;
+    // Reuse threshold for an offcut, in m².
+    static MAX_MIN_OFFCUT_M2 = 10;
 
     constructor() {
         this.engine = new window.OptimizerEngine();
@@ -80,6 +82,7 @@ class UIManager {
             formatWidth: document.getElementById('format-width'),
             formatHeight: document.getElementById('format-height'),
             formatKerf: document.getElementById('format-kerf'),
+            formatMinOffcut: document.getElementById('format-min-offcut'),
             formatError: document.getElementById('format-error'),
             planWarning: document.getElementById('plan-warning'),
             
@@ -209,6 +212,9 @@ class UIManager {
         if (formatKerf) {
             formatKerf.addEventListener('input', () => this.applyKerf());
         }
+        if (this.els.formatMinOffcut) {
+            this.els.formatMinOffcut.addEventListener('input', () => this.applyMinOffcut());
+        }
 
         formatPreset.addEventListener('change', () => {
             if (formatPreset.value === 'custom') {
@@ -231,8 +237,9 @@ class UIManager {
 
     /** Restores the last used format (localStorage), falling back to CONFIG defaults. */
     loadPlaqueFormat() {
-        const { formatPreset, formatWidth, formatHeight, formatKerf } = this.els;
+        const { formatPreset, formatWidth, formatHeight, formatKerf, formatMinOffcut } = this.els;
         let { width, height, kerf } = window.CONFIG.plaque;
+        let minOffcutArea = window.CONFIG.algo.minOffcutArea;
 
         try {
             const saved = JSON.parse(localStorage.getItem('calpicad.plaque'));
@@ -241,6 +248,7 @@ class UIManager {
                 height = saved.height;
             }
             if (saved && this.isValidKerf(saved.kerf)) kerf = saved.kerf;
+            if (saved && this.isValidMinOffcut(saved.minOffcutArea / 1e6)) minOffcutArea = saved.minOffcutArea;
         } catch (e) {
             // Corrupted or unavailable storage: keep the defaults.
         }
@@ -248,6 +256,8 @@ class UIManager {
         formatWidth.value = width;
         formatHeight.value = height;
         if (formatKerf) formatKerf.value = kerf;
+        if (formatMinOffcut) formatMinOffcut.value = +(minOffcutArea / 1e6).toFixed(3);
+        this.setMinOffcutArea(minOffcutArea);
 
         const preset = `${width}x${height}`;
         const isPreset = [...formatPreset.options].some(o => o.value === preset);
@@ -282,6 +292,24 @@ class UIManager {
         this.setPlaqueFormat(window.CONFIG.plaque.width, window.CONFIG.plaque.height, kerf);
     }
 
+    /** The field is in m² (what a workshop thinks in); the algorithm works in mm². */
+    applyMinOffcut() {
+        const m2 = parseFloat(this.els.formatMinOffcut.value);
+
+        if (!this.isValidMinOffcut(m2)) {
+            this.showFormatError(`Chute minimale invalide (entre 0 et ${UIManager.MAX_MIN_OFFCUT_M2} m²).`);
+            return;
+        }
+
+        this.showFormatError(null);
+        this.setMinOffcutArea(m2 * 1e6);
+    }
+
+    setMinOffcutArea(areaMm2) {
+        window.CONFIG.algo.minOffcutArea = areaMm2;
+        this.saveSettings();
+    }
+
     isValidDimension(value) {
         return Number.isFinite(value) && value >= UIManager.MIN_DIM && value <= UIManager.MAX_DIM;
     }
@@ -290,15 +318,26 @@ class UIManager {
         return Number.isFinite(value) && value >= 0 && value <= UIManager.MAX_KERF;
     }
 
+    isValidMinOffcut(valueM2) {
+        return Number.isFinite(valueM2) && valueM2 >= 0 && valueM2 <= UIManager.MAX_MIN_OFFCUT_M2;
+    }
+
     setPlaqueFormat(width, height, kerf = window.CONFIG.plaque.kerf) {
         window.CONFIG.plaque.width = width;
         window.CONFIG.plaque.height = height;
         window.CONFIG.plaque.kerf = kerf;
+        this.saveSettings();
+    }
 
+    saveSettings() {
+        const { width, height, kerf } = window.CONFIG.plaque;
         try {
-            localStorage.setItem('calpicad.plaque', JSON.stringify({ width, height, kerf }));
+            localStorage.setItem('calpicad.plaque', JSON.stringify({
+                width, height, kerf,
+                minOffcutArea: window.CONFIG.algo.minOffcutArea
+            }));
         } catch (e) {
-            // Storage unavailable (private mode): the format still applies for this session.
+            // Storage unavailable (private mode): the settings still apply for this session.
         }
     }
 
@@ -320,7 +359,7 @@ class UIManager {
     }
 
     setFormatControlsDisabled(disabled) {
-        [this.els.formatPreset, this.els.formatWidth, this.els.formatHeight, this.els.formatKerf].forEach(el => {
+        [this.els.formatPreset, this.els.formatWidth, this.els.formatHeight, this.els.formatKerf, this.els.formatMinOffcut].forEach(el => {
             if (el) el.disabled = disabled;
         });
     }
@@ -811,6 +850,35 @@ class UIManager {
                     const padding = 3; // Reduced padding to move text closer to corner
                     ctx.fillText(`${Math.round(r.w)}x${Math.round(r.h)}`, r.x * scale + padding, r.y * scale + padding);
                 }
+            });
+        }
+
+        // 2b. Waste: leftovers below the reuse threshold. Painted with hatching so every part
+        // of the panel is visibly accounted for — a bare area used to look like a rendering bug.
+        if (panel.wasteRects) {
+            panel.wasteRects.forEach(r => {
+                const x = r.x * scale, y = r.y * scale, w = r.w * scale, h = r.h * scale;
+                ctx.fillStyle = colors.waste;
+                ctx.fillRect(x, y, w, h);
+
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(x, y, w, h);
+                ctx.clip();
+                ctx.strokeStyle = colors.wasteBorder;
+                ctx.lineWidth = 1;
+                const step = 8;
+                for (let d = -h; d < w; d += step) {
+                    ctx.beginPath();
+                    ctx.moveTo(x + d, y + h);
+                    ctx.lineTo(x + d + h, y);
+                    ctx.stroke();
+                }
+                ctx.restore();
+
+                ctx.strokeStyle = colors.wasteBorder;
+                ctx.lineWidth = 1;
+                ctx.strokeRect(x, y, w, h);
             });
         }
 

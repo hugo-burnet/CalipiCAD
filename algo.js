@@ -24,7 +24,9 @@ const CONFIG = {
         cutLine: '#FF5555',
         highlight: '#4CAF50',
         offcut: 'rgba(76, 175, 80, 0.5)', // Green at 50% opacity
-        offcutBorder: '#2E7D32'
+        offcutBorder: '#2E7D32',
+        waste: 'rgba(198, 40, 40, 0.28)', // Red: leftover too small to reuse
+        wasteBorder: '#8E2A2A'
     },
     algo: {
         minOffcutArea: 50000, // mm²
@@ -64,7 +66,8 @@ class PanelSolution {
         this.height = height;
         this.pieces = [];
         this.freeRects = [new Rect(0, 0, width, height)];
-        this.offcuts = [];
+        this.offcuts = [];    // Leftovers worth keeping
+        this.wasteRects = []; // Leftovers below the reuse threshold
         this.material = null; // Set by engine
         this.cutCount = 0;    // Guillotine cuts actually needed on this panel
     }
@@ -74,6 +77,7 @@ class PanelSolution {
         copy.pieces = this.pieces.map(p => ({...p})); // Shallow copy of piece objects is enough for simple props
         copy.freeRects = this.freeRects.map(r => r.clone());
         copy.offcuts = this.offcuts.map(o => o.clone());
+        copy.wasteRects = this.wasteRects.map(o => o.clone());
         copy.material = this.material;
         copy.cutCount = this.cutCount;
         return copy;
@@ -238,9 +242,11 @@ class BinaryTreePacker {
     }
 
     _finalizePanel(panel) {
-        // Filter offcuts based on min area
+        // Leftovers split in two: big enough to be worth keeping (offcuts) and the rest (waste).
+        // Both are kept so the renderer can account for every square millimetre of the panel —
+        // an unpainted area reads as a bug rather than as scrap.
         panel.offcuts = panel.freeRects.filter(r => r.area >= CONFIG.algo.minOffcutArea);
-        // Clean up freeRects (optional, but good for cleanliness)
+        panel.wasteRects = panel.freeRects.filter(r => r.area < CONFIG.algo.minOffcutArea);
         panel.freeRects = [];
     }
 }

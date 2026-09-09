@@ -771,6 +771,46 @@ footer a:hover {
     width: 76px;
 }
 
+.canvas-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-md);
+    list-style: none;
+    margin: var(--spacing-md) 0 0;
+    padding: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.canvas-legend li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.canvas-legend .swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+
+.swatch-piece {
+    background-color: rgba(26, 42, 85, 0.5);
+    border: 1px solid #4A6FA5;
+}
+
+.swatch-offcut {
+    background-color: rgba(76, 175, 80, 0.5);
+    border: 1px dashed #2E7D32;
+}
+
+.swatch-waste {
+    background-color: rgba(198, 40, 40, 0.28);
+    border: 1px solid #8E2A2A;
+    background-image: repeating-linear-gradient(45deg, transparent, transparent 2px, #8E2A2A 2px, #8E2A2A 3px);
+}
+
 .plan-warning {
     display: none;
     margin-top: var(--spacing-md);
