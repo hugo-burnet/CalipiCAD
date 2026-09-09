@@ -9,6 +9,8 @@ CalpiCAD est une application web conçue pour optimiser le calpinage de pièces 
 - **Visualisation 2D Interactive** : Affichez le résultat du calpinage en temps réel avec la possibilité de naviguer entre les différentes plaques.
 - **Gestion du Sens du Fil** : Activez ou désactivez la rotation des pièces pour respecter le sens du fil du matériau.
 - **Format de Panneau Configurable** : Choisissez le format de plaque parmi les formats courants ou saisissez des dimensions personnalisées. Le dernier format utilisé est mémorisé.
+- **Trait de Scie (Kerf)** : La largeur de lame est prise en compte dans le calcul des coupes, pour que les pièces sortent aux bonnes cotes en atelier.
+- **Alertes Explicites** : Les lignes de fichier illisibles et les pièces trop grandes pour le panneau sont signalées au lieu d'être ignorées silencieusement.
 - **Statistiques Détaillées** : Obtenez des informations sur le taux d'utilisation du matériau et le nombre de panneaux nécessaires.
 - **Messages de Chargement Amusants** : Des phrases aléatoires s'affichent pendant l'optimisation pour rendre l'attente plus agréable.
 - **Export des Résultats** : Téléchargez les plans de coupe au format JSON ou PDF.
@@ -43,13 +45,14 @@ Pour lancer CalpiCAD localement, suivez ces étapes :
 
 ## Configuration
 
-Le format du panneau se règle **directement dans l'interface**, section `02 // OPTIMISATION` : choisissez un format courant dans la liste déroulante, ou `Personnalisé…` pour saisir vos propres dimensions (1 à 20 000 mm). Le choix est mémorisé dans le navigateur (`localStorage`) et réappliqué à la visite suivante.
+Le format du panneau et le trait de scie se règlent **directement dans l'interface**, section `02 // OPTIMISATION` : choisissez un format courant dans la liste déroulante, ou `Personnalisé…` pour saisir vos propres dimensions (1 à 20 000 mm). Les réglages sont mémorisés dans le navigateur (`localStorage`) et réappliqués à la visite suivante.
 
 Le fichier `algo.js` contient les autres configurations de l'algorithme :
 
--   `CONFIG.plaque.width` et `CONFIG.plaque.height` : Dimensions de plaque **par défaut**, utilisées tant qu'aucun format n'a été choisi dans l'interface.
+-   `CONFIG.plaque.width`, `CONFIG.plaque.height` et `CONFIG.plaque.kerf` : Valeurs **par défaut**, utilisées tant que rien n'a été choisi dans l'interface.
 -   `CONFIG.algo.maxTimeMs` : Durée maximale d'exécution de l'algorithme d'optimisation (actuellement 1 minute).
 -   `CONFIG.algo.stabilityThresholdMs` : Temps après lequel l'algorithme s'arrête si aucune amélioration n'est trouvée (actuellement 30 secondes).
+-   `CONFIG.algo.optimalGraceMs` : Temps d'optimisation des chutes accordé une fois le nombre minimal de panneaux atteint (actuellement 5 secondes).
 
 Vous pouvez modifier ces valeurs directement dans `algo.js` pour ajuster le comportement de l'optimiseur.
 

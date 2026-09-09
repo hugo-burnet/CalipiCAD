@@ -12,6 +12,8 @@ class UIManager {
     // Panel dimension bounds, in mm.
     static MIN_DIM = 1;
     static MAX_DIM = 20000;
+    // Saw blade width, in mm.
+    static MAX_KERF = 50;
 
     constructor() {
         this.engine = new window.OptimizerEngine();
@@ -20,7 +22,8 @@ class UIManager {
             result: null,
             pieces: [],
             rotationEnabled: true, // Default: Rotation allowed (Sens du fil: Ignoré)
-            isOptimizing: false
+            isOptimizing: false,
+            warnings: {} // Keyed warning blocks rendered together in #plan-warning
         };
         
         this.loadingMessages = [
@@ -76,7 +79,9 @@ class UIManager {
             formatCustom: document.getElementById('format-custom'),
             formatWidth: document.getElementById('format-width'),
             formatHeight: document.getElementById('format-height'),
+            formatKerf: document.getElementById('format-kerf'),
             formatError: document.getElementById('format-error'),
+            planWarning: document.getElementById('plan-warning'),
             
             // Progress / Feedback
             progressBar: document.getElementById('opt-progress'),
@@ -196,10 +201,14 @@ class UIManager {
        PANEL FORMAT
        ========================================= */
     setupFormatControls() {
-        const { formatPreset, formatWidth, formatHeight } = this.els;
+        const { formatPreset, formatWidth, formatHeight, formatKerf } = this.els;
         if (!formatPreset || !formatWidth || !formatHeight) return;
 
         this.loadPlaqueFormat();
+
+        if (formatKerf) {
+            formatKerf.addEventListener('input', () => this.applyKerf());
+        }
 
         formatPreset.addEventListener('change', () => {
             if (formatPreset.value === 'custom') {
@@ -222,8 +231,8 @@ class UIManager {
 
     /** Restores the last used format (localStorage), falling back to CONFIG defaults. */
     loadPlaqueFormat() {
-        const { formatPreset, formatWidth, formatHeight } = this.els;
-        let { width, height } = window.CONFIG.plaque;
+        const { formatPreset, formatWidth, formatHeight, formatKerf } = this.els;
+        let { width, height, kerf } = window.CONFIG.plaque;
 
         try {
             const saved = JSON.parse(localStorage.getItem('calpicad.plaque'));
@@ -231,19 +240,21 @@ class UIManager {
                 width = saved.width;
                 height = saved.height;
             }
+            if (saved && this.isValidKerf(saved.kerf)) kerf = saved.kerf;
         } catch (e) {
             // Corrupted or unavailable storage: keep the defaults.
         }
 
         formatWidth.value = width;
         formatHeight.value = height;
+        if (formatKerf) formatKerf.value = kerf;
 
         const preset = `${width}x${height}`;
         const isPreset = [...formatPreset.options].some(o => o.value === preset);
         formatPreset.value = isPreset ? preset : 'custom';
         this.toggleCustomFormat(!isPreset);
 
-        this.setPlaqueFormat(width, height);
+        this.setPlaqueFormat(width, height, kerf);
     }
 
     applyCustomFormat() {
@@ -259,16 +270,33 @@ class UIManager {
         this.setPlaqueFormat(w, h);
     }
 
+    applyKerf() {
+        const kerf = parseFloat(this.els.formatKerf.value);
+
+        if (!this.isValidKerf(kerf)) {
+            this.showFormatError(`Trait de scie invalide (entre 0 et ${UIManager.MAX_KERF} mm).`);
+            return;
+        }
+
+        this.showFormatError(null);
+        this.setPlaqueFormat(window.CONFIG.plaque.width, window.CONFIG.plaque.height, kerf);
+    }
+
     isValidDimension(value) {
         return Number.isFinite(value) && value >= UIManager.MIN_DIM && value <= UIManager.MAX_DIM;
     }
 
-    setPlaqueFormat(width, height) {
+    isValidKerf(value) {
+        return Number.isFinite(value) && value >= 0 && value <= UIManager.MAX_KERF;
+    }
+
+    setPlaqueFormat(width, height, kerf = window.CONFIG.plaque.kerf) {
         window.CONFIG.plaque.width = width;
         window.CONFIG.plaque.height = height;
+        window.CONFIG.plaque.kerf = kerf;
 
         try {
-            localStorage.setItem('calpicad.plaque', JSON.stringify({ width, height }));
+            localStorage.setItem('calpicad.plaque', JSON.stringify({ width, height, kerf }));
         } catch (e) {
             // Storage unavailable (private mode): the format still applies for this session.
         }
@@ -292,9 +320,48 @@ class UIManager {
     }
 
     setFormatControlsDisabled(disabled) {
-        [this.els.formatPreset, this.els.formatWidth, this.els.formatHeight].forEach(el => {
+        [this.els.formatPreset, this.els.formatWidth, this.els.formatHeight, this.els.formatKerf].forEach(el => {
             if (el) el.disabled = disabled;
         });
+    }
+
+    /**
+     * Records a warning under `key` (null clears it) and re-renders the banner.
+     * Import warnings and optimization warnings coexist, so neither overwrites the other.
+     */
+    setPlanWarning(key, title, items) {
+        if (!title) {
+            delete this.state.warnings[key];
+        } else {
+            this.state.warnings[key] = { title, items: items || [] };
+        }
+        this.renderPlanWarnings();
+    }
+
+    renderPlanWarnings() {
+        const el = this.els.planWarning;
+        if (!el) return;
+
+        const blocks = Object.values(this.state.warnings);
+        if (blocks.length === 0) {
+            el.innerHTML = '';
+            el.classList.remove('visible');
+            return;
+        }
+
+        el.innerHTML = blocks.map(b => {
+            const list = b.items.length
+                ? `<ul>${b.items.map(i => `<li>${this.escapeHtml(i)}</li>`).join('')}</ul>`
+                : '';
+            return `<strong>${this.escapeHtml(b.title)}</strong>${list}`;
+        }).join('');
+        el.classList.add('visible');
+    }
+
+    escapeHtml(value) {
+        const div = document.createElement('div');
+        div.textContent = String(value);
+        return div.innerHTML;
     }
 
     setupModals() {
@@ -398,6 +465,7 @@ class UIManager {
 
     normalizeData(data) {
         const pieces = [];
+        const skipped = [];
         data.forEach((row, index) => {
              const getVal = (keys) => {
                  for(let k of keys) {
@@ -422,8 +490,19 @@ class UIManager {
                  for(let i=0; i<qty; i++) {
                      pieces.push({ id: `${ref}-${i}`, reference: ref, longueur: l, largeur: w, epaisseur: t, finition: fin });
                  }
+             } else {
+                 // A row with no readable length/width used to vanish without a trace, producing
+                 // an incomplete plan from a malformed file. Report it instead.
+                 skipped.push(`Ligne ${index + 2} (${ref}) : longueur/largeur illisible ou nulle`);
              }
         });
+
+        this.setPlanWarning(
+            'import',
+            skipped.length > 0 ? `${skipped.length} ligne(s) du fichier ont été ignorées :` : null,
+            skipped
+        );
+
         return pieces;
     }
 
@@ -473,6 +552,7 @@ class UIManager {
         // Hide previous results
         this.els.vizSection.style.display = 'none';
         this.els.exportSection.style.display = 'none';
+        this.setPlanWarning('unplaced', null);
         
         // Init Stats Display
         if (this.els.progressBar) {
@@ -594,6 +674,17 @@ class UIManager {
             this.els.optStatus.classList.remove('running');
             this.els.grainToggleBtn.disabled = false;
             this.setFormatControlsDisabled(false);
+
+            // Pieces that fit no panel at all must be called out: they are absent from the plan.
+            const unplaced = result.unplaced || [];
+            const plaque = result.plaque;
+            this.setPlanWarning(
+                'unplaced',
+                unplaced.length > 0
+                    ? `${unplaced.length} pièce(s) ne rentrent pas dans un panneau de ${plaque.width} × ${plaque.height} mm et sont absentes du plan :`
+                    : null,
+                [...new Set(unplaced.map(p => `${p.reference} — ${p.longueur} × ${p.largeur} mm`))]
+            );
 
             // Show Results
             this.state.currentPanelIndex = 0;
@@ -835,7 +926,8 @@ class UIManager {
     
     reset() {
         this.stopOptimization();
-        this.state = { pieces: [], currentPanelIndex: 0, result: null, rotationEnabled: this.state.rotationEnabled, isOptimizing: false };
+        this.state = { pieces: [], currentPanelIndex: 0, result: null, rotationEnabled: this.state.rotationEnabled, isOptimizing: false, warnings: {} };
+        this.renderPlanWarnings();
         if (this.els.fileInput) this.els.fileInput.value = '';
         if (this.els.dropZone) this.els.dropZone.style.display = 'block';
         if (this.els.fileInfo) this.els.fileInfo.style.display = 'none';

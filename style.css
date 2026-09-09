@@ -753,6 +753,54 @@ footer a:hover {
     font-size: 14px;
 }
 
+.format-kerf {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.format-kerf-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.format-kerf .format-input {
+    width: 76px;
+}
+
+.plan-warning {
+    display: none;
+    margin-top: var(--spacing-md);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid #FF9800;
+    border-left-width: 3px;
+    border-radius: var(--border-radius);
+    background-color: rgba(255, 152, 0, 0.08);
+    color: #FF9800;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.plan-warning.visible {
+    display: block;
+}
+
+.plan-warning strong {
+    display: block;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 11px;
+}
+
+.plan-warning ul {
+    margin: 4px 0 0;
+    padding-left: 18px;
+}
+
 .format-error {
     display: none;
     margin-top: var(--spacing-sm);
