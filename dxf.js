@@ -167,6 +167,20 @@ class DxfBuilder {
 }
 
 /**
+ * Largeur moyenne d'un caractere, en fraction de sa hauteur, pour la police
+ * par defaut d'AutoCAD (txt.shx). Volontairement majoree : mieux vaut un
+ * texte un peu petit qu'un cartouche qui deborde sur le panneau voisin.
+ */
+const DXF_CHAR_WIDTH = 0.8;
+
+/** Reduit la hauteur du texte si necessaire pour qu'il tienne dans maxWidth. */
+function fitTextHeight(text, maxWidth, desiredHeight) {
+    const len = String(text).length;
+    if (!len) return desiredHeight;
+    return Math.min(desiredHeight, maxWidth / (len * DXF_CHAR_WIDTH));
+}
+
+/**
  * Construit le DXF complet d'un calpinage.
  *
  * Les panneaux sont disposes en grille avec un espacement franc : les empiler
@@ -187,8 +201,11 @@ function buildCalpinageDxf(result, options = {}) {
     // large, illisible au zoom global.
     const cols = options.columns || Math.max(1, Math.ceil(Math.sqrt(panels.length)));
     const titleH = Math.max(40, H * 0.03);
-    const gapX = Math.max(200, W * 0.06);
-    const gapY = titleH * 3;
+
+    // Espacement genereux : au premier essai les panneaux se touchaient presque
+    // et les cartouches d'un panneau debordaient sur celui d'a cote.
+    const gapX = options.gapX || Math.max(500, W * 0.2);
+    const gapY = options.gapY || Math.max(titleH * 6, H * 0.2);
 
     // L'app dessine Y vers le bas, AutoCAD Y vers le haut.
     const flipY = (y, h) => H - (y + h);
@@ -204,9 +221,17 @@ function buildCalpinageDxf(result, options = {}) {
 
         // Cartouche au-dessus du panneau
         const mat = panel.material || {};
-        const title = `Panneau ${i + 1}/${panels.length}  -  ${mat.thickness || '?'}mm ${mat.finish || ''}`
-            + `  -  ${W} x ${H} mm  -  Util ${(panel.utilization || 0).toFixed(1)}%`;
-        dxf.addText('CALPICAD_TEXTE', ox, oy + H + titleH * 0.8, titleH, title, 'left');
+        // Deux lignes courtes plutot qu'une longue : sur une seule ligne le
+        // cartouche depassait la largeur du panneau et venait s'ecrire par
+        // dessus celui du panneau voisin.
+        const ligne1 = `Panneau ${i + 1}/${panels.length}  -  ${mat.thickness || '?'}mm ${mat.finish || ''}`.trim();
+        const ligne2 = `${W} x ${H} mm  -  Util ${(panel.utilization || 0).toFixed(1)}%`
+            + `  -  ${(panel.pieces || []).length} pieces`;
+
+        const h1 = fitTextHeight(ligne1, W, titleH);
+        const h2 = fitTextHeight(ligne2, W, titleH * 0.8);
+        dxf.addText('CALPICAD_TEXTE', ox, oy + H + titleH * 0.6 + h1 * 1.4, h1, ligne1, 'left');
+        dxf.addText('CALPICAD_TEXTE', ox, oy + H + titleH * 0.6, h2, ligne2, 'left');
 
         if (includeOffcuts) {
             (panel.offcuts || []).forEach(r => {
@@ -229,20 +254,26 @@ function buildCalpinageDxf(result, options = {}) {
             const dims = `${Math.round(p.width)} x ${Math.round(p.height)}`
                 + (p.rotation === 90 ? ' (pivote)' : '');
 
-            // Hauteur de texte calee sur la boite, en largeur comme en hauteur :
-            // sinon le repere d'une petite piece deborde sur ses voisines.
-            const byWidth = name.length > 0 ? (p.width * 0.85) / (name.length * 0.62) : p.width;
-            const th = Math.min(p.height / 5, byWidth, 60);
-            if (th < 6) return; // illisible : on laisse la piece nue
+            // Les DEUX lignes doivent tenir dans la piece. Ne calibrer que le
+            // nom laissait la ligne de cotes deborder largement sur les pieces
+            // voisines des que la piece etait etroite : "286 x 823 (pivote)"
+            // fait 18 caracteres, illisible dans 286 mm de large.
+            const availW = p.width * 0.9;
+            const availH = p.height * 0.9;
+
+            const nameH = fitTextHeight(name, availW, Math.min(60, availH / 3));
+            if (nameH < 6) return; // illisible a cette echelle : on laisse la piece nue
+
+            const dimsH = fitTextHeight(dims, availW, nameH * 0.75);
 
             const cx = x + p.width / 2;
             const cy = y + p.height / 2;
 
-            if (p.height > th * 3.2) {
-                dxf.addText('CALPICAD_TEXTE', cx, cy + th * 0.8, th, name);
-                dxf.addText('CALPICAD_TEXTE', cx, cy - th * 0.8, th * 0.75, dims);
+            if (dimsH >= 6 && nameH + dimsH * 2.2 <= availH) {
+                dxf.addText('CALPICAD_TEXTE', cx, cy + nameH * 0.8, nameH, name);
+                dxf.addText('CALPICAD_TEXTE', cx, cy - dimsH * 0.9, dimsH, dims);
             } else {
-                dxf.addText('CALPICAD_TEXTE', cx, cy, th, name);
+                dxf.addText('CALPICAD_TEXTE', cx, cy, nameH, name);
             }
         });
     });

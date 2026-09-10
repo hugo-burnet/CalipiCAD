@@ -60,7 +60,7 @@ Vous pouvez modifier ces valeurs directement dans `algo.js` pour ajuster le comp
 
 Le bouton `TÉLÉCHARGER DXF` produit un fichier **DXF R12 (AC1009)**, le dialecte le plus largement lu (AutoCAD, BricsCAD, LibreCAD, commandes numériques). Aucune dépendance externe n'est utilisée : le fichier est écrit directement par `dxf.js`.
 
-**Disposition** : les panneaux ne sont pas superposés à la même origine. Ils sont répartis en grille approximativement carrée, avec un espacement horizontal d'au moins 200 mm et un bandeau de titre au-dessus de chacun. Un débit de 14 panneaux s'ouvre donc en 4 colonnes lisibles au zoom global.
+**Disposition** : les panneaux ne sont pas superposés à la même origine. Ils sont répartis en grille approximativement carrée, avec un espacement de 20 % du format (560 mm horizontalement et 414 mm verticalement pour un 2800 × 2070), et un cartouche sur deux lignes au-dessus de chacun. Tous les textes — cartouches comme repères de pièces — sont calibrés pour tenir dans leur cadre, sans déborder sur le voisin.
 
 **Calques** — chacun peut être gelé ou masqué indépendamment dans AutoCAD :
 
