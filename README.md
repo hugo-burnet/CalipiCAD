@@ -13,7 +13,7 @@ CalpiCAD est une application web conçue pour optimiser le calpinage de pièces 
 - **Alertes Explicites** : Les lignes de fichier illisibles et les pièces trop grandes pour le panneau sont signalées au lieu d'être ignorées silencieusement.
 - **Statistiques Détaillées** : Obtenez des informations sur le taux d'utilisation du matériau et le nombre de panneaux nécessaires.
 - **Messages de Chargement Amusants** : Des phrases aléatoires s'affichent pendant l'optimisation pour rendre l'attente plus agréable.
-- **Export des Résultats** : Téléchargez les plans de coupe au format JSON ou PDF. Chaque page PDF rappelle le format de plaque, le trait de scie et le bilan des coupes, et chaque pièce porte son nom et ses cotes de découpe.
+- **Export des Résultats** : Téléchargez les plans de coupe au format JSON, PDF ou **DXF (AutoCAD)**. Chaque page PDF rappelle le format de plaque, le trait de scie et le bilan des coupes, et chaque pièce porte son nom et ses cotes de découpe.
 - **Interface Utilisateur Intuitive** : Une interface claire et réactive pour une expérience utilisateur optimale.
 
 ## Technologies Utilisées
@@ -56,6 +56,26 @@ Le fichier `algo.js` contient les autres configurations de l'algorithme :
 
 Vous pouvez modifier ces valeurs directement dans `algo.js` pour ajuster le comportement de l'optimiseur.
 
+## Export DXF (AutoCAD)
+
+Le bouton `TÉLÉCHARGER DXF` produit un fichier **DXF R12 (AC1009)**, le dialecte le plus largement lu (AutoCAD, BricsCAD, LibreCAD, commandes numériques). Aucune dépendance externe n'est utilisée : le fichier est écrit directement par `dxf.js`.
+
+**Disposition** : les panneaux ne sont pas superposés à la même origine. Ils sont répartis en grille approximativement carrée, avec un espacement horizontal d'au moins 200 mm et un bandeau de titre au-dessus de chacun. Un débit de 14 panneaux s'ouvre donc en 4 colonnes lisibles au zoom global.
+
+**Calques** — chacun peut être gelé ou masqué indépendamment dans AutoCAD :
+
+| Calque | Couleur | Contenu |
+|---|---|---|
+| `CALPICAD_PANNEAU` | blanc/noir | contour de la plaque |
+| `CALPICAD_PIECES` | bleu | pièces à débiter |
+| `CALPICAD_CHUTES` | vert | chutes réutilisables |
+| `CALPICAD_PERTES` | rouge | pertes sous le seuil |
+| `CALPICAD_TEXTE` | jaune | repères, cotes et cartouches |
+
+**Unités** : millimètres (`$INSUNITS = 4`). Les pièces sont dessinées à leurs cotes réelles ; les intervalles entre elles correspondent au trait de scie.
+
+**Accents** : les textes sont translittérés en ASCII (`Côté` devient `Cote`). Le DXF R12 n'a pas d'encodage unicode fiable, et les accents ressortiraient en caractères parasites selon la page de code du poste.
+
 ## Contribution
 Les contributions sont les bienvenues ! Si vous souhaitez améliorer CalpiCAD, n'hésitez pas à soumettre des pull requests ou à ouvrir des issues sur le dépôt GitHub.
 
@@ -63,3 +83,4 @@ Les contributions sont les bienvenues ! Si vous souhaitez améliorer CalpiCAD, n
 Pour toute question ou suggestion, vous pouvez contacter l'auteur :
 -   **GitHub** : [hugo-burnet](https://github.com/hugo-burnet)
 -   **LinkedIn** : [Hugo Burnet](https://www.linkedin.com/in/hugo-burnet-a11323309/)
+

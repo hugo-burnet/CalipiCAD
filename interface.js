@@ -111,7 +111,8 @@ class UIManager {
             // Export
             exportSection: document.getElementById('export-section'),
             downloadBtn: document.getElementById('download-json'),
-            downloadPdfBtn: document.getElementById('download-pdf')
+            downloadPdfBtn: document.getElementById('download-pdf'),
+            downloadDxfBtn: document.getElementById('download-dxf')
         };
     }
 
@@ -168,6 +169,7 @@ class UIManager {
         if (this.els.nextBtn) this.els.nextBtn.addEventListener('click', () => this.nav(1));
         if (this.els.downloadBtn) this.els.downloadBtn.addEventListener('click', () => this.downloadReport());
         if (this.els.downloadPdfBtn) this.els.downloadPdfBtn.addEventListener('click', () => this.downloadPDF());
+        if (this.els.downloadDxfBtn) this.els.downloadDxfBtn.addEventListener('click', () => this.downloadDXF());
         if (this.els.removeFileBtn) this.els.removeFileBtn.addEventListener('click', () => this.reset());
         
         if (this.els.startBtn) {
@@ -1162,6 +1164,21 @@ class UIManager {
              doc.addImage(imgData, 'PNG', centerX, yTopOffset, finalImgWidth, finalImgHeight);
          }
          doc.save('calpinage_result.pdf');
+    }
+
+    downloadDXF() {
+        if (!this.state.result) return;
+        if (!window.DxfExporter) { alert("Module DXF manquant"); return; }
+
+        const dxf = window.DxfExporter.build(this.state.result);
+        const blob = new Blob([dxf], { type: 'application/dxf' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `calpinage.dxf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
     }
 
     downloadReport() {
