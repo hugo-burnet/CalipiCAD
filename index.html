@@ -8,11 +8,21 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=1.2">
+    <link rel="stylesheet" href="style.css?v=2.0">
+    <!--
+      integrity : le navigateur refuse le script si son contenu a changé d'un octet.
+      Sans ça, une compromission du CDN s'exécutait dans la page avec les données du
+      client. Les empreintes sont figées pour ces versions exactes — les mettre à jour
+      en même temps que le numéro de version dans l'URL.
+    -->
     <!-- SheetJS CDN -->
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"
+            integrity="sha384-QCIdq2UMVEoSRhR3ZWZwdz2/pivLowr+eokFMdYyukq7qI26VYRxFa4Nl6FKetmL"
+            crossorigin="anonymous"></script>
     <!-- jsPDF CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"
+            integrity="sha512-qZvrmS2ekKPF2mSznTQsxqPgnpkI4DNTlrdUmTzrDgektczlKNRRhy5X5AAOnx5S09ydFYWWNSfcEqDTTHgtNA=="
+            crossorigin="anonymous"></script>
 </head>
 <body>
     <div class="grid-background"></div>
@@ -321,8 +331,10 @@
         </div>
     </div>
 
-    <script src="algo.js?v=1.2"></script>
-    <script src="dxf.js?v=1.0"></script>
-    <script src="interface.js?v=1.2"></script>
+    <!-- Numéro de version commun à tous les fichiers, y compris celui que worker.js
+         importe : décalés, les visiteurs récurrents mélangeaient ancien et nouveau JS. -->
+    <script src="algo.js?v=2.0"></script>
+    <script src="dxf.js?v=2.0"></script>
+    <script src="interface.js?v=2.0"></script>
 </body>
 </html>

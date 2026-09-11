@@ -54,7 +54,10 @@ class DxfBuilder {
     static sanitize(text) {
         return String(text ?? '')
             .normalize('NFD')
-            .replace(/[̀-ͯ]/g, '')
+            // Marques diacritiques combinantes (U+0300-U+036F) laissees par NFD.
+            // Ecrites en sequences d'echappement : en caracteres litteraux, la plage
+            // ne survivrait pas a une relecture du fichier dans un autre encodage.
+            .replace(/[\u0300-\u036f]/g, '')
             .replace(/[\r\n]+/g, ' ')
             .replace(/[^\x20-\x7E]/g, '?');
     }

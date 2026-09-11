@@ -8,6 +8,97 @@
  * - Bridge to OptimizerEngine
  */
 
+/**
+ * Aiguillage moteur : Web Worker quand c'est possible, moteur en page sinon.
+ *
+ * Le worker est le chemin normal. Il rend au solveur les ~20 % de budget que le
+ * bridage à 4 ms des setTimeout imbriqués lui prenait, et surtout il sort la boucle
+ * du thread de rendu : plus aucune saccade pendant l'optimisation.
+ *
+ * Mais un Worker ne peut pas être créé depuis une page ouverte en file:// (ce que le
+ * README propose), d'où la sonde au chargement et le repli sur OptimizerEngine.
+ */
+class EngineHost {
+    static PROBE_TIMEOUT_MS = 4000;
+
+    constructor(workerUrl) {
+        this.workerUrl = workerUrl;
+        this.worker = null;
+        this.local = null;
+        this.onProgress = null;
+        this.onComplete = null;
+        this.usingWorker = this._spawn();
+    }
+
+    /** Résout true si le worker répond 'ready', false s'il faut se rabattre sur la page. */
+    _spawn() {
+        return new Promise((resolve) => {
+            let worker;
+            try {
+                worker = new Worker(this.workerUrl);
+            } catch (err) {
+                console.warn("CalpiCAD : Worker refusé (page ouverte en file:// ?), optimisation dans la page.", err);
+                resolve(false);
+                return;
+            }
+
+            let timer = null;
+            let settled = false;
+            const settle = (ok) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                if (ok) {
+                    this.worker = worker;
+                    worker.onmessage = (e) => this._dispatch(e.data);
+                    worker.onerror = (e) => {
+                        console.error("CalpiCAD : erreur du worker.", e.message || e);
+                        this._dispatch({ type: 'failed', message: e.message });
+                    };
+                } else {
+                    try { worker.terminate(); } catch (e) { /* déjà mort, rien à faire */ }
+                    console.warn("CalpiCAD : Worker injoignable, optimisation dans la page.");
+                }
+                resolve(ok);
+            };
+
+            worker.onmessage = (e) => { if (e.data && e.data.type === 'ready') settle(true); };
+            worker.onerror = () => settle(false);
+            timer = setTimeout(() => settle(false), EngineHost.PROBE_TIMEOUT_MS);
+        });
+    }
+
+    _dispatch(msg) {
+        if (!msg) return;
+        if (msg.type === 'progress') {
+            if (this.onProgress) this.onProgress(msg.payload);
+        } else if (msg.type === 'complete') {
+            if (this.onComplete) this.onComplete(msg.payload);
+        } else if (msg.type === 'failed') {
+            // On débloque l'interface avec un résultat nul plutôt que de la laisser
+            // tourner indéfiniment sur une optimisation morte.
+            if (this.onComplete) this.onComplete(null);
+        }
+    }
+
+    async start(pieces, plaque, options, onProgress, onComplete) {
+        this.onProgress = onProgress;
+        this.onComplete = onComplete;
+
+        if (await this.usingWorker) {
+            this.worker.postMessage({ type: 'start', pieces, plaque, options });
+            return;
+        }
+        if (!this.local) this.local = new window.OptimizerEngine();
+        this.local.start(pieces, plaque, options, onProgress, onComplete);
+    }
+
+    stop() {
+        if (this.worker) this.worker.postMessage({ type: 'stop' });
+        if (this.local) this.local.stop();
+    }
+}
+
 class UIManager {
     // Panel dimension bounds, in mm.
     static MIN_DIM = 1;
@@ -16,9 +107,42 @@ class UIManager {
     static MAX_KERF = 50;
     // Reuse threshold for an offcut, in m².
     static MAX_MIN_OFFCUT_M2 = 10;
+    // Garde-fous d'import : une quantité mal tapée (100000 au lieu de 10) figeait
+    // l'onglet à la lecture du fichier, avant même le lancement de l'optimisation.
+    static MAX_QTY_PER_ROW = 5000;
+    static MAX_TOTAL_PIECES = 20000;
+
+    // Palette du PDF, en RGB. Reprend la sémantique de la légende à l'écran, mais en
+    // clair : un plan part à l'imprimante de l'atelier, pas sur un fond noir.
+    static PDF_COLORS = {
+        piece:      [222, 229, 241],
+        pieceLine:  [ 74, 111, 165],
+        offcut:     [219, 240, 221],
+        offcutLine: [ 46, 125,  50],
+        waste:      [248, 226, 226],
+        wasteLine:  [160,  60,  60],
+        panelLine:  [ 20,  20,  20],
+        text:       [ 17,  17,  17],
+        textDim:    [ 90,  90,  90]
+    };
+
+    // Colonnes acceptées, déjà en minuscules : la résolution se fait une seule fois
+    // contre les en-têtes du fichier, pas à chaque ligne.
+    static COLUMNS = {
+        ref:       ['denomination', 'reference', 'ref'],
+        longueur:  ['longueur', 'l'],
+        largeur:   ['largeur', 'w'],
+        epaisseur: ['epaisseur', 'e'],
+        quantite:  ['quantite', 'qte', 'q'],
+        finition:  ['finition', 'finish']
+    };
 
     constructor() {
-        this.engine = new window.OptimizerEngine();
+        this.engine = new EngineHost('worker.js?v=2.0');
+        // Identifie le calcul en cours. Retirer le fichier pendant une optimisation
+        // laissait arriver l'onComplete du calcul abandonné, qui réaffichait le plan
+        // ~1,3 s plus tard — après l'animation de fin.
+        this.runToken = 0;
         this.state = {
             currentPanelIndex: 0,
             result: null,
@@ -121,8 +245,23 @@ class UIManager {
         this.setupControls();
         this.setupFormatControls();
         this.setupMobileMenu();
+        this.setupResizeHandling();
         this.updateGrainButton();
         console.log("CalpiCAD Interface Initialized");
+    }
+
+    /**
+     * Le canevas est dimensionné une fois au rendu : sans ça, une rotation d'écran ou
+     * un redimensionnement de fenêtre le laissait figé à l'ancienne largeur, décalé
+     * dans son conteneur. Anti-rebond pour ne pas redessiner à chaque pixel.
+     */
+    setupResizeHandling() {
+        let timer = null;
+        window.addEventListener('resize', () => {
+            if (!this.state.result) return;
+            clearTimeout(timer);
+            timer = setTimeout(() => this.renderCanvas(), 150);
+        });
     }
 
     setupMobileMenu() {
@@ -507,40 +646,80 @@ class UIManager {
     normalizeData(data) {
         const pieces = [];
         const skipped = [];
+
+        // Table d'en-têtes résolue une seule fois. La version précédente refaisait un
+        // Object.keys().find() avec toLowerCase() pour chaque colonne ET chaque ligne,
+        // ce qui rendait l'import quadratique. sheet_to_json({defval}) donne à toutes
+        // les lignes le même jeu de clés, donc la première suffit à les connaître.
+        const headers = {};
+        for (const key of Object.keys(data[0] || {})) {
+            headers[String(key).trim().toLowerCase()] = key;
+        }
+        const cols = {};
+        for (const [field, candidates] of Object.entries(UIManager.COLUMNS)) {
+            cols[field] = candidates.map(c => headers[c]).filter(k => k !== undefined);
+        }
+
+        const getVal = (row, keys) => {
+            for (const key of keys) {
+                const v = row[key];
+                // On passe au synonyme suivant si la colonne existe mais est vide :
+                // un fichier qui a DENOMINATION vide et Ref rempli doit lire Ref.
+                if (v !== null && v !== undefined && String(v).trim() !== '') return v;
+            }
+            return null;
+        };
+
+        const parseN = (v) => {
+            if (typeof v === 'string') v = v.replace(',', '.').replace(/[^\d.-]/g, '');
+            return parseFloat(v) || 0;
+        };
+
+        let capped = false;
+
         data.forEach((row, index) => {
-             const getVal = (keys) => {
-                 for(let k of keys) {
-                     const found = Object.keys(row).find(rk => rk.toLowerCase() === k.toLowerCase());
-                     if(found) return row[found];
-                 }
-                 return null;
-             };
-             const parseN = (v) => {
-                 if(typeof v === 'string') v = v.replace(',', '.').replace(/[^\d.-]/g, '');
-                 return parseFloat(v) || 0;
-             }
+            const rawRef = getVal(row, cols.ref);
+            const ref = rawRef !== null ? String(rawRef).trim() : `P-${index}`;
+            const l = parseN(getVal(row, cols.longueur));
+            const w = parseN(getVal(row, cols.largeur));
+            const t = parseN(getVal(row, cols.epaisseur));
 
-             const ref = getVal(['DENOMINATION', 'Reference', 'Ref']) || `P-${index}`;
-             const l = parseN(getVal(['LONGUEUR', 'L']));
-             const w = parseN(getVal(['LARGEUR', 'W']));
-             const t = parseN(getVal(['EPAISSEUR', 'Epaisseur', 'E']));
-             const qty = parseInt(parseN(getVal(['QUANTITE', 'Qte', 'Q']))) || 1;
-             const fin = getVal(['FINITION', 'Finish']) || 'Std';
+            // Finition normalisée : brute, "BLANC", "blanc" et "BLANC " partaient dans
+            // trois groupes matière distincts, donc trois jeux de panneaux au lieu d'un.
+            const fin = String(getVal(row, cols.finition) ?? '').trim().toUpperCase() || 'STD';
 
-             if(l>0 && w>0 && qty>0) {
-                 for(let i=0; i<qty; i++) {
-                     pieces.push({ id: `${ref}-${i}`, reference: ref, longueur: l, largeur: w, epaisseur: t, finition: fin });
-                 }
-             } else {
-                 // A row with no readable length/width used to vanish without a trace, producing
-                 // an incomplete plan from a malformed file. Report it instead.
-                 skipped.push(`Ligne ${index + 2} (${ref}) : longueur/largeur illisible ou nulle`);
-             }
+            if (!(l > 0 && w > 0)) {
+                // A row with no readable length/width used to vanish without a trace, producing
+                // an incomplete plan from a malformed file. Report it instead.
+                skipped.push(`Ligne ${index + 2} (${ref}) : longueur/largeur illisible ou nulle`);
+                return;
+            }
+
+            let qty = Math.floor(parseN(getVal(row, cols.quantite))) || 1;
+            if (qty < 1) qty = 1;
+            if (qty > UIManager.MAX_QTY_PER_ROW) {
+                skipped.push(`Ligne ${index + 2} (${ref}) : quantité ${qty} ramenée à ${UIManager.MAX_QTY_PER_ROW}`);
+                qty = UIManager.MAX_QTY_PER_ROW;
+            }
+            if (pieces.length + qty > UIManager.MAX_TOTAL_PIECES) {
+                qty = Math.max(0, UIManager.MAX_TOTAL_PIECES - pieces.length);
+                capped = true;
+            }
+
+            for (let i = 0; i < qty; i++) {
+                // L'index de ligne entre dans l'id : deux lignes de même référence
+                // produisaient des identifiants en double.
+                pieces.push({ id: `${ref}-${index}-${i}`, reference: ref, longueur: l, largeur: w, epaisseur: t, finition: fin });
+            }
         });
+
+        if (capped) {
+            skipped.push(`Total plafonné à ${UIManager.MAX_TOTAL_PIECES} pièces : la fin du fichier a été tronquée`);
+        }
 
         this.setPlanWarning(
             'import',
-            skipped.length > 0 ? `${skipped.length} ligne(s) du fichier ont été ignorées :` : null,
+            skipped.length > 0 ? `${skipped.length} ligne(s) du fichier ont été ignorées ou corrigées :` : null,
             skipped
         );
 
@@ -561,11 +740,20 @@ class UIManager {
             if(!displayMap[k]) displayMap[k] = { ...p, count: 0 };
             displayMap[k].count++;
         });
+        // textContent et non innerHTML : le fichier Excel est une source non fiable, et
+        // une DENOMINATION contenant du HTML s'exécutait dans la page. Fragment unique
+        // pour ne pas relayouter à chaque ligne.
+        const rows = document.createDocumentFragment();
         Object.values(displayMap).forEach(p => {
             const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${p.reference}</td><td>${p.longueur}</td><td>${p.largeur}</td><td>${p.epaisseur}</td><td>${p.count}</td><td>${p.finition}</td>`;
-            this.els.piecesList.appendChild(tr);
+            [p.reference, p.longueur, p.largeur, p.epaisseur, p.count, p.finition].forEach(value => {
+                const td = document.createElement('td');
+                td.textContent = value;
+                tr.appendChild(td);
+            });
+            rows.appendChild(tr);
         });
+        this.els.piecesList.appendChild(rows);
         
         if (this.els.resultsSection) this.els.resultsSection.style.display = 'block';
         // Hide result-dependent sections
@@ -579,6 +767,7 @@ class UIManager {
     startOptimization() {
         if (this.state.pieces.length === 0) return;
 
+        const token = ++this.runToken;
         this.state.isOptimizing = true;
         this.state.result = null;
 
@@ -613,10 +802,16 @@ class UIManager {
 
         this.engine.start(
             this.state.pieces,
-            window.CONFIG.plaque,
-            { grainEnabled: grainEnabled },
-            (progress) => this.onProgress(progress),
-            (result) => this.onComplete(result)
+            { ...window.CONFIG.plaque },
+            {
+                grainEnabled: grainEnabled,
+                // Le worker a sa propre copie de CONFIG : le seuil réglé dans
+                // l'interface doit voyager avec la demande, pas via le global.
+                minOffcutArea: window.CONFIG.algo.minOffcutArea
+            },
+            // Le jeton écarte les retours d'un calcul abandonné entre-temps.
+            (progress) => { if (token === this.runToken) this.onProgress(progress); },
+            (result) => { if (token === this.runToken) this.onComplete(result, token); }
         );
     }
 
@@ -683,9 +878,30 @@ class UIManager {
         }
     }
 
-    onComplete(result) {
-        console.log("Optimization Complete. Result:", result);
+    /** Rend la main à l'utilisateur : bouton, badge et réglages de format. */
+    _resetRunUi() {
         this.state.isOptimizing = false;
+        this.stopMessageCycle();
+        this.els.startBtn.innerHTML = '<span class="icon">⚡</span> Lancer l\'Optimisation';
+        this.els.startBtn.classList.remove('danger');
+        this.els.optStatus.classList.remove('running');
+        this.els.grainToggleBtn.disabled = false;
+        this.setFormatControlsDisabled(false);
+    }
+
+    onComplete(result, token) {
+        if (token !== this.runToken) return;
+
+        // Le worker n'a pas pu mener le calcul à terme : on débloque l'interface au
+        // lieu de la laisser tourner sur une optimisation morte.
+        if (!result) {
+            this._resetRunUi();
+            this.els.optStatus.textContent = "Échec";
+            alert("L'optimisation a échoué. Voir la console pour le détail.");
+            return;
+        }
+
+        console.log("Optimization Complete.", result.stats);
         // Snapshot the format used, so changing it afterwards doesn't rescale an existing plan.
         result.plaque = { ...window.CONFIG.plaque };
         this.state.result = result;
@@ -699,22 +915,23 @@ class UIManager {
 
         // 2. Animation Sequence
         const finalize = () => {
-            this.stopMessageCycle();
-            
+            // L'animation dure 1,3 s, pendant lesquelles l'utilisateur peut avoir retiré
+            // le fichier : sans ce test, le plan abandonné réapparaissait à l'écran.
+            if (token !== this.runToken) return;
+
+            // Le drapeau ne tombe qu'ici, avec le libellé du bouton. Le remettre à faux
+            // dès l'arrivée du résultat ouvrait une fenêtre de 1,3 s où le bouton
+            // affichait « Arrêter » mais relançait un second calcul.
+            this._resetRunUi();
+
             // Set success message
             if (this.els.loadingMsg) {
                 this.els.loadingMsg.textContent = "Chargement fini, merci de scroller";
                 this.els.loadingMsg.style.opacity = '1';
                 this.els.loadingMsg.style.color = 'var(--accent-highlight)';
             }
-            
-            // Reset UI Controls
-            this.els.startBtn.innerHTML = '<span class="icon">⚡</span> Lancer l\'Optimisation';
-            this.els.startBtn.classList.remove('danger');
+
             this.els.optStatus.textContent = "Terminé";
-            this.els.optStatus.classList.remove('running');
-            this.els.grainToggleBtn.disabled = false;
-            this.setFormatControlsDisabled(false);
 
             // Pieces that fit no panel at all must be called out: they are absent from the plan.
             const unplaced = result.unplaced || [];
@@ -736,7 +953,9 @@ class UIManager {
             if (this.els.optBestPanels) this.els.optBestPanels.parentElement.querySelector('.label').textContent = "Meilleure Solution";
             
             // Update final stats
-            if (this.els.optIter) this.els.optIter.textContent = "-";
+            // Le moteur remonte désormais son compteur : la case « Itérations » affichait
+            // un tiret depuis toujours faute de valeur à y mettre.
+            if (this.els.optIter) this.els.optIter.textContent = (result.stats.iterations ?? '-').toLocaleString('fr-FR');
             if (this.els.optBestPanels) this.els.optBestPanels.textContent = result.stats.totalPanels;
             if (this.els.optBestUtil) this.els.optBestUtil.textContent = result.stats.globalUtilization.toFixed(1) + '%';
         };
@@ -814,17 +1033,26 @@ class UIManager {
         const isMobile = window.innerWidth <= 768;
 
         // Auto-scale
-        const containerW = this.els.vizSection.clientWidth - 40;
-        const scale = containerW / plaque.width;
+        const cssWidth = Math.max(1, this.els.vizSection.clientWidth - 40);
+        const scale = cssWidth / plaque.width;
+        const cssHeight = plaque.height * scale;
 
-        canvas.width = plaque.width * scale;
-        canvas.height = plaque.height * scale;
+        // Le canevas était dimensionné en pixels CSS : sur un écran à forte densité
+        // tout sortait à la moitié ou au tiers de la résolution native, d'où le flou —
+        // et d'où les polices de 3 px qu'on avait fini par mettre sur mobile pour
+        // compenser. On dessine dans le repère CSS et ctx.scale absorbe la densité.
+        const dpr = Math.min(window.devicePixelRatio || 1, 3);
+        canvas.width = Math.round(cssWidth * dpr);
+        canvas.height = Math.round(cssHeight * dpr);
+        canvas.style.width = `${cssWidth}px`;
+        canvas.style.height = `${cssHeight}px`;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
+        ctx.clearRect(0, 0, cssWidth, cssHeight);
+
         // 1. Background
         ctx.fillStyle = '#1e1e1e';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillRect(0, 0, cssWidth, cssHeight);
 
         // 2. Offcuts
         if (panel.offcuts) {
@@ -837,13 +1065,15 @@ class UIManager {
                 ctx.strokeRect(r.x * scale, r.y * scale, r.w * scale, r.h * scale);
                 ctx.setLineDash([]);
                 
-                const minOffcutW = isMobile ? 150 : 200;
-                const minOffcutH = isMobile ? 80 : 100;
+                // Seuils en pixels écran et non en mm : c'est la place réellement
+                // disponible qui décide si la cote est lisible, pas la taille de la chute.
+                const labelFs = isMobile ? 9 : 14;
+                const drawnW = r.w * scale;
+                const drawnH = r.h * scale;
 
-                if (r.w > minOffcutW && r.h > minOffcutH) {
+                if (drawnW > labelFs * 4 && drawnH > labelFs * 1.8) {
                     ctx.fillStyle = '#FFFFFF'; // High contrast
-                    // Mobile: 3px (Reduced again), Desktop: 14px
-                    ctx.font = isMobile ? `3px sans-serif` : `14px sans-serif`;
+                    ctx.font = `${labelFs}px sans-serif`;
                     
                     // Fix truncation: Use top baseline and add padding to "lower" the text into the box
                     ctx.textBaseline = 'top'; 
@@ -898,24 +1128,22 @@ class UIManager {
             ctx.strokeRect(x, y, w, h);
 
             // Text Rendering with smart scaling and truncation
-            const minPieceW = isMobile ? 30 : 40;
-            const minPieceH = isMobile ? 20 : 25; 
+            const minPieceW = isMobile ? 34 : 40;
+            const minPieceH = isMobile ? 24 : 25;
 
             if(w > minPieceW && h > minPieceH) {
                 ctx.fillStyle = colors.text;
-                
+
                 // 1. Calculate Constraints
                 const padding = isMobile ? 3 : 5;
                 const maxWidth = w - (padding * 2);
-                
+
                 // 2. Initial Font Size Calculation
-                // Mobile: Max 6px (50% of 11px), desktop max 20px. 
-                let baseFs = isMobile ? 6 : 20;
-                
-                // Heuristic: scale down if name is very long relative to width
-                // But don't go below minFs yet
-                let fs = baseFs;
-                const minFs = isMobile ? 4 : 10;
+                // Le canevas est maintenant rendu à la densité réelle de l'écran, donc
+                // une taille en pixels CSS est enfin une taille lisible : plus besoin
+                // des 6 px / 4 px qui compensaient le sous-échantillonnage.
+                let fs = isMobile ? 11 : 20;
+                const minFs = isMobile ? 7 : 10;
 
                 ctx.font = `600 ${fs}px sans-serif`;
                 
@@ -951,7 +1179,7 @@ class UIManager {
                     ctx.fillText(textToDraw, textX, textY);
                     
                     // Secondary Text (Dimensions)
-                    const secondaryFs = Math.max(isMobile ? 4 : 7, fs * 0.85);
+                    const secondaryFs = Math.max(8, fs * 0.85);
                     const dimY = textY + fs + 2;
                     
                     // Ensure enough height remains for dimensions
@@ -996,7 +1224,17 @@ class UIManager {
     
     reset() {
         this.stopOptimization();
+        // Invalide le calcul en vol : son onComplete (et l'animation de 1,3 s qui le
+        // suit) doit être ignoré, sinon le plan du fichier qu'on vient de retirer
+        // revenait s'afficher tout seul.
+        this.runToken++;
         this.state = { pieces: [], currentPanelIndex: 0, result: null, rotationEnabled: this.state.rotationEnabled, isOptimizing: false, warnings: {} };
+        this._resetRunUi();
+        this.els.optStatus.textContent = "Prêt";
+        if (this.els.progressBar) {
+            this.els.progressBar.style.width = '0%';
+            this.els.progressBar.classList.remove('gold-finish');
+        }
         this.renderPlanWarnings();
         if (this.els.fileInput) this.els.fileInput.value = '';
         if (this.els.dropZone) this.els.dropZone.style.display = 'block';
@@ -1009,161 +1247,235 @@ class UIManager {
     }
     
     /**
-     * Draws a piece's name and its cut dimensions inside its rectangle on the PDF canvas.
-     * Font sizes shrink to fit the box, so a small piece keeps a readable label instead of
-     * spilling over its neighbours; the dimensions line is dropped only if it truly cannot fit.
+     * Hachures à 45° découpées analytiquement aux bords du rectangle.
+     * jsPDF n'a pas de masque de découpe simple, et une diagonale qui dépasse vient
+     * salir la pièce voisine. La droite est paramétrée par t, on ne garde que
+     * l'intervalle de t qui reste dans la boîte.
      */
-    _drawPdfPieceLabel(ctx, piece, x, y, w, h) {
-        const padding = 10;
-        const maxW = w - padding * 2;
-        const maxH = h - padding * 2;
-        if (maxW <= 0 || maxH <= 0) return;
+    _pdfHatch(doc, x, y, w, h, step) {
+        for (let d = -h; d < w; d += step) {
+            const t0 = Math.max(0, -d);
+            const t1 = Math.min(h, w - d);
+            if (t1 <= t0) continue;
+            doc.line(x + d + t0, y + h - t0, x + d + t1, y + h - t1);
+        }
+    }
 
-        const name = String(piece.ref ?? '');
-        const dims = `${Math.round(piece.width)} x ${Math.round(piece.height)}${piece.rotation === 90 ? ' (pivote)' : ''}`;
+    /**
+     * Écrit un libellé centré (nom + cotes) dans un rectangle, coordonnées en mm.
+     *
+     * Les deux lignes doivent tenir en LARGEUR comme en HAUTEUR : ne calibrer que la
+     * largeur laissait une pièce longue et plate garder une police énorme qui débordait
+     * verticalement. Si les cotes ne rentrent pas, on garde le nom seul.
+     */
+    _pdfLabel(doc, rectX, rectY, rectW, rectH, name, dims) {
+        const PT_MM = 25.4 / 72; // jsPDF dimensionne les polices en points, le plan en mm
+        const MIN_PT = 4.5;
+        const MAX_PT = 10;
+        const pad = 1;
+        const gap = 0.6;
 
-        const fit = (text, weight, startFs, minFs) => {
-            let fs = startFs;
-            ctx.font = `${weight} ${fs}px sans-serif`;
-            while (fs > minFs && ctx.measureText(text).width > maxW) {
-                fs -= 1;
-                ctx.font = `${weight} ${fs}px sans-serif`;
+        const maxW = rectW - pad * 2;
+        const maxH = rectH - pad * 2;
+        if (maxW <= 1 || maxH <= 1 || !name) return;
+
+        const C = UIManager.PDF_COLORS;
+
+        const fit = (text, style, capPt) => {
+            let pt = Math.min(MAX_PT, capPt);
+            while (pt > MIN_PT) {
+                doc.setFont('helvetica', style);
+                doc.setFontSize(pt);
+                if (doc.getTextWidth(text) <= maxW) break;
+                pt -= 0.25;
             }
-            return fs;
+            return pt;
         };
 
+        // Mesure avec la police courante : à appeler après fit().
         const truncate = (text) => {
-            if (ctx.measureText(text).width <= maxW) return text;
+            if (doc.getTextWidth(text) <= maxW) return text;
             let cut = text;
-            while (cut.length > 1 && ctx.measureText(cut + '..').width > maxW) cut = cut.slice(0, -1);
+            while (cut.length > 1 && doc.getTextWidth(cut + '..') > maxW) cut = cut.slice(0, -1);
             return cut + '..';
         };
 
-        ctx.fillStyle = '#000';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        const cx = x + w / 2;
-        const gap = 5;
-        const MAX_FS = 34;
-        const MIN_FS = 8;
+        const cx = rectX + rectW / 2;
+        const cy = rectY + rectH / 2;
 
-        // Both lines must fit the HEIGHT too, not just the width: on a long flat piece the
-        // name would otherwise stay huge, blow the height budget, and nothing would be drawn.
-        // dims sits at 0.75x the name, so two lines need nameFs * 1.75 + gap <= maxH.
-        const twoLineCap = Math.floor((maxH - gap) / 1.75);
+        // Deux lignes = namePt + 0,75 x namePt en points, plus l'interligne en mm.
+        const twoLineCapPt = (maxH - gap) / (1.75 * PT_MM);
 
-        if (twoLineCap >= MIN_FS) {
-            const nameFs = fit(name, '600', Math.min(MAX_FS, twoLineCap), MIN_FS);
-            ctx.font = `600 ${nameFs}px sans-serif`;
-            const nameText = truncate(name);
+        if (dims && twoLineCapPt >= MIN_PT) {
+            const namePt = fit(name, 'bold', twoLineCapPt);
+            const dimPt = Math.max(MIN_PT, namePt * 0.75);
 
-            const dimFs = Math.max(MIN_FS - 1, Math.round(nameFs * 0.75));
-            ctx.font = `400 ${dimFs}px sans-serif`;
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(dimPt);
+            if (doc.getTextWidth(dims) <= maxW) {
+                const nameH = namePt * PT_MM;
+                const dimH = dimPt * PT_MM;
+                const top = cy - (nameH + gap + dimH) / 2;
 
-            if (ctx.measureText(dims).width <= maxW) {
-                const top = y + (h - (nameFs + gap + dimFs)) / 2;
-                ctx.font = `600 ${nameFs}px sans-serif`;
-                ctx.fillText(nameText, cx, top);
-                ctx.fillStyle = '#444';
-                ctx.font = `400 ${dimFs}px sans-serif`;
-                ctx.fillText(dims, cx, top + nameFs + gap);
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(namePt);
+                doc.setTextColor(C.text[0], C.text[1], C.text[2]);
+                doc.text(truncate(name), cx, top, { align: 'center', baseline: 'top' });
+
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(dimPt);
+                doc.setTextColor(C.textDim[0], C.textDim[1], C.textDim[2]);
+                doc.text(dims, cx, top + nameH + gap, { align: 'center', baseline: 'top' });
                 return;
             }
         }
 
-        // Not enough room for two lines: the name alone, sized to whatever height is left.
-        const soloFs = fit(name, '600', Math.min(MAX_FS, Math.floor(maxH)), MIN_FS);
-        if (soloFs > maxH) return;
-        ctx.font = `600 ${soloFs}px sans-serif`;
-        ctx.fillText(truncate(name), cx, y + (h - soloFs) / 2);
+        // Pas la place pour deux lignes : le nom seul, calibré sur ce qui reste.
+        const soloPt = fit(name, 'bold', maxH / PT_MM);
+        if (soloPt * PT_MM > maxH) return;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(soloPt);
+        doc.setTextColor(C.text[0], C.text[1], C.text[2]);
+        doc.text(truncate(name), cx, cy, { align: 'center', baseline: 'middle' });
     }
 
+    /** Légende de bas de page, alignée sur celle du rendu 2D. */
+    _pdfLegend(doc, x, y) {
+        const C = UIManager.PDF_COLORS;
+        const items = [
+            [C.piece, C.pieceLine, 'Pièce'],
+            [C.offcut, C.offcutLine, 'Chute réutilisable'],
+            [C.waste, C.wasteLine, 'Perte (sous le seuil)']
+        ];
+        const box = 3.4;
+        let cursor = x;
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setLineWidth(0.2);
+
+        items.forEach(([fill, line, label]) => {
+            doc.setFillColor(fill[0], fill[1], fill[2]);
+            doc.setDrawColor(line[0], line[1], line[2]);
+            doc.rect(cursor, y, box, box, 'FD');
+            doc.setTextColor(C.textDim[0], C.textDim[1], C.textDim[2]);
+            doc.text(label, cursor + box + 1.6, y + box - 0.6);
+            cursor += box + 1.6 + doc.getTextWidth(label) + 6;
+        });
+    }
+
+    /**
+     * Plan de découpe au format PDF VECTORIEL.
+     *
+     * La version précédente rastérisait chaque panneau dans un canevas de 2000 px puis
+     * l'injectait en PNG base64 : plusieurs Mo par page, donc des fichiers de dizaines
+     * de Mo pour un plan de dix panneaux, flous dès qu'on zoome et sans texte
+     * sélectionnable. Tout est tracé ici en primitives jsPDF — quelques Ko, net à
+     * n'importe quel zoom, et les repères sont cherchables dans le lecteur.
+     *
+     * Les chutes et les pertes sont dessinées elles aussi : l'écran les annonçait dans
+     * sa légende, le PDF ne montrait que les pièces.
+     */
     downloadPDF() {
-         // (Keep existing PDF logic but use this.state.result)
-         if(!this.state.result) return;
-         if (!window.jspdf) { alert("PDF Lib missing"); return; }
-         const { jsPDF } = window.jspdf;
-         const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-         const panels = this.state.result.panels;
-         
-         const plaque = this.state.result.plaque || window.CONFIG.plaque;
+        if (!this.state.result) return;
+        if (!window.jspdf) { alert("PDF Lib missing"); return; }
 
-         const tempCanvas = document.createElement('canvas');
-         const scaleFactor = 2000 / plaque.width;
-         tempCanvas.width = 2000;
-         tempCanvas.height = plaque.height * scaleFactor;
-         const ctx = tempCanvas.getContext('2d');
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+        const C = UIManager.PDF_COLORS;
+        const panels = this.state.result.panels;
+        const plaque = this.state.result.plaque || window.CONFIG.plaque;
 
-         const renderToTemp = (pIdx) => {
-             const p = panels[pIdx];
-             const s = tempCanvas.width / plaque.width;
-             ctx.fillStyle = '#FFF'; ctx.fillRect(0,0,tempCanvas.width,tempCanvas.height);
-             ctx.lineWidth = 2; ctx.strokeStyle='#000'; ctx.strokeRect(0,0,tempCanvas.width,tempCanvas.height);
-             
-             p.pieces.forEach(piece => {
-                const x = piece.x*s, y = piece.y*s, w = piece.width*s, h = piece.height*s;
-                ctx.fillStyle = '#DDD';
-                ctx.fillRect(x, y, w, h);
-                ctx.strokeRect(x, y, w, h);
-                this._drawPdfPieceLabel(ctx, piece, x, y, w, h);
-             });
-         };
- 
-         for(let i=0; i<panels.length; i++) {
-             if(i > 0) doc.addPage();
-             const panel = panels[i];
-             doc.setFontSize(16);
-             doc.text(`Panneau ${i+1}/${panels.length}`, 10, 15);
-             doc.setFontSize(10);
-             doc.text(`Format : ${plaque.width} x ${plaque.height} mm  -  ${panel.material.thickness}mm ${panel.material.finish}  -  Util: ${panel.utilization.toFixed(1)}%`, 10, 20);
+        const pageW = doc.internal.pageSize.getWidth();
+        const pageH = doc.internal.pageSize.getHeight();
+        const margin = 10;
+        const headerH = 28; // titre + deux lignes de détails
+        const footerH = 12; // légende
 
-             const offcuts = panel.offcuts || [];
-             const biggest = offcuts.reduce((max, o) => Math.max(max, o.area), 0);
-             const details = [
-                 `Trait de scie : ${plaque.kerf ?? 0} mm`,
-                 `${panel.pieces.length} pièce(s)`,
-                 `${panel.cutCount || 0} coupe(s)`,
-                 `Chutes : ${offcuts.length}${biggest > 0 ? ` (max ${(biggest / 1e6).toFixed(2)} m²)` : ''}`
-             ];
-             doc.text(details.join('  -  '), 10, 25);
+        const availW = pageW - margin * 2;
+        const availH = pageH - headerH - footerH - margin;
+        const scale = Math.min(availW / plaque.width, availH / plaque.height);
+        const drawW = plaque.width * scale;
+        const drawH = plaque.height * scale;
+        const ox = (pageW - drawW) / 2;
+        const oy = headerH;
 
-             renderToTemp(i);
-             const imgData = tempCanvas.toDataURL('image/png');
+        panels.forEach((panel, i) => {
+            if (i > 0) doc.addPage();
 
-             // Calculate image dimensions to fit within PDF page while maintaining aspect ratio
-             const imgWidth = tempCanvas.width;
-             const imgHeight = tempCanvas.height;
-             const imgAspectRatio = imgWidth / imgHeight;
+            // --- Cartouche ---
+            doc.setTextColor(C.text[0], C.text[1], C.text[2]);
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(15);
+            doc.text(`Panneau ${i + 1}/${panels.length}`, margin, 13);
 
-             const pdfPageWidth = doc.internal.pageSize.getWidth(); // e.g., 297 for landscape A4
-             const pdfPageHeight = doc.internal.pageSize.getHeight(); // e.g., 210 for landscape A4
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9.5);
+            doc.text(
+                `Format : ${plaque.width} x ${plaque.height} mm  -  ${panel.material.thickness}mm ${panel.material.finish}`
+                + `  -  Util : ${panel.utilization.toFixed(1)}%`,
+                margin, 18.5
+            );
 
-             const xMargin = 10; // Left/Right margin
-             const yTopOffset = 30; // After title and info
-             const yBottomMargin = 10; // Bottom margin
+            const offcuts = panel.offcuts || [];
+            const biggest = offcuts.reduce((max, o) => Math.max(max, o.area || 0), 0);
+            doc.setTextColor(C.textDim[0], C.textDim[1], C.textDim[2]);
+            doc.setFontSize(9);
+            doc.text([
+                `Trait de scie : ${plaque.kerf ?? 0} mm`,
+                `${panel.pieces.length} pièce(s)`,
+                `${panel.cutCount || 0} coupe(s)`,
+                `Chutes : ${offcuts.length}${biggest > 0 ? ` (max ${(biggest / 1e6).toFixed(2)} m²)` : ''}`
+            ].join('   -   '), margin, 23.5);
 
-             const availablePdfWidth = pdfPageWidth - (2 * xMargin);
-             const availablePdfHeight = pdfPageHeight - yTopOffset - yBottomMargin;
+            // --- Contour de la plaque ---
+            doc.setFillColor(255, 255, 255);
+            doc.setDrawColor(C.panelLine[0], C.panelLine[1], C.panelLine[2]);
+            doc.setLineWidth(0.5);
+            doc.rect(ox, oy, drawW, drawH, 'FD');
 
-             let finalImgWidth;
-             let finalImgHeight;
+            // --- Chutes réutilisables ---
+            offcuts.forEach(r => {
+                const x = ox + r.x * scale, y = oy + r.y * scale;
+                const w = r.w * scale, h = r.h * scale;
+                doc.setFillColor(C.offcut[0], C.offcut[1], C.offcut[2]);
+                doc.setDrawColor(C.offcutLine[0], C.offcutLine[1], C.offcutLine[2]);
+                doc.setLineWidth(0.2);
+                doc.rect(x, y, w, h, 'FD');
+                this._pdfLabel(doc, x, y, w, h, `${Math.round(r.w)} x ${Math.round(r.h)}`, '');
+            });
 
-             // Scale based on available width first
-             finalImgWidth = availablePdfWidth;
-             finalImgHeight = finalImgWidth / imgAspectRatio;
+            // --- Pertes sous le seuil, hachurées comme à l'écran ---
+            (panel.wasteRects || []).forEach(r => {
+                const x = ox + r.x * scale, y = oy + r.y * scale;
+                const w = r.w * scale, h = r.h * scale;
+                doc.setFillColor(C.waste[0], C.waste[1], C.waste[2]);
+                doc.setDrawColor(C.wasteLine[0], C.wasteLine[1], C.wasteLine[2]);
+                doc.setLineWidth(0.2);
+                doc.rect(x, y, w, h, 'FD');
+                doc.setLineWidth(0.08);
+                this._pdfHatch(doc, x, y, w, h, 1.6);
+            });
 
-             // If height exceeds available height, scale based on height instead
-             if (finalImgHeight > availablePdfHeight) {
-                 finalImgHeight = availablePdfHeight;
-                 finalImgWidth = finalImgHeight * imgAspectRatio;
-             }
-             
-             // Center the image horizontally
-             const centerX = (pdfPageWidth - finalImgWidth) / 2;
+            // --- Pièces ---
+            panel.pieces.forEach(p => {
+                const x = ox + p.x * scale, y = oy + p.y * scale;
+                const w = p.width * scale, h = p.height * scale;
+                doc.setFillColor(C.piece[0], C.piece[1], C.piece[2]);
+                doc.setDrawColor(C.pieceLine[0], C.pieceLine[1], C.pieceLine[2]);
+                doc.setLineWidth(0.25);
+                doc.rect(x, y, w, h, 'FD');
+                this._pdfLabel(
+                    doc, x, y, w, h,
+                    String(p.ref ?? ''),
+                    `${Math.round(p.width)} x ${Math.round(p.height)}${p.rotation === 90 ? ' (pivote)' : ''}`
+                );
+            });
 
-             doc.addImage(imgData, 'PNG', centerX, yTopOffset, finalImgWidth, finalImgHeight);
-         }
-         doc.save('calpinage_result.pdf');
+            this._pdfLegend(doc, margin, pageH - footerH + 3);
+        });
+
+        doc.save('calpinage_result.pdf');
     }
 
     downloadDXF() {
@@ -1190,6 +1502,9 @@ class UIManager {
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+        // L'URL d'objet retenait le blob pour toute la durée de vie de la page :
+        // un export répété gardait autant de copies du résultat en mémoire.
+        URL.revokeObjectURL(a.href);
     }
 }
 

@@ -5,6 +5,10 @@
  * - Mathematical data structures
  * - Packing algorithms
  * - Optimization engine (Timer, Progress, Interruption)
+ *
+ * Ce fichier ne touche jamais au DOM : il est chargé tel quel par la page ET par
+ * worker.js (importScripts). D'où `self` plutôt que `window` a l'export, et d'où
+ * le fait que tout ce qui traverse postMessage soit de la donnée simple.
  */
 
 /* =========================================
@@ -33,9 +37,35 @@ const CONFIG = {
         maxTimeMs: 60000,     // 1 minute
         stabilityThresholdMs: 30000, // Stop if no improvement for 30s
         optimalGraceMs: 5000, // Extra offcut polishing once the panel count is provably minimal
-        yieldInterval: 15     // ms
+        yieldInterval: 15,    // ms — dans la page, il faut rendre la main souvent pour rester fluide
+        workerYieldInterval: 250 // ms — dans un worker, juste assez pour lire un ordre d'arrêt
     }
 };
+
+/* =========================================
+   1b. YIELD
+   ========================================= */
+// `setTimeout(0)` est bridé à 4 ms dès que les timers s'imbriquent (règle HTML du
+// "timer nesting level"). À raison d'un yield toutes les 15 ms, ça brûlait ~20 % du
+// budget d'optimisation à ne rien faire. Une tâche MessageChannel n'est pas bridée.
+const _yieldChannel = (typeof MessageChannel !== 'undefined') ? new MessageChannel() : null;
+let _yieldResolve = null;
+if (_yieldChannel) {
+    _yieldChannel.port1.onmessage = () => {
+        const resolve = _yieldResolve;
+        _yieldResolve = null;
+        if (resolve) resolve();
+    };
+}
+
+/** Rend la main à la boucle d'évènements sans passer par un timer bridé. */
+function yieldToEventLoop() {
+    if (!_yieldChannel) return new Promise(r => setTimeout(r, 0));
+    return new Promise(resolve => {
+        _yieldResolve = resolve;
+        _yieldChannel.port2.postMessage(0);
+    });
+}
 
 /* =========================================
    2. DATA STRUCTURES
@@ -43,9 +73,12 @@ const CONFIG = {
 class Rect {
     constructor(x, y, w, h) {
         this.x = x; this.y = y; this.w = w; this.h = h;
+        // Champ simple plutôt que getter : le résultat traverse postMessage, et le
+        // clonage structuré ne recopie que les données propres — un getter de
+        // prototype serait perdu en route et `o.area` vaudrait undefined côté page.
+        // Les Rect ne sont jamais redimensionnés après construction.
+        this.area = w * h;
     }
-    get area() { return this.w * this.h; }
-    clone() { return new Rect(this.x, this.y, this.w, this.h); }
 }
 
 class PlacedPiece {
@@ -55,8 +88,6 @@ class PlacedPiece {
         this.x = x; this.y = y;
         this.width = w; this.height = h;
         this.rotation = rotated ? 90 : 0;
-        // Metadata for sorting/identification
-        this.originalPiece = piece;
     }
 }
 
@@ -70,27 +101,13 @@ class PanelSolution {
         this.wasteRects = []; // Leftovers below the reuse threshold
         this.material = null; // Set by engine
         this.cutCount = 0;    // Guillotine cuts actually needed on this panel
-    }
 
-    clone() {
-        const copy = new PanelSolution(this.width, this.height);
-        copy.pieces = this.pieces.map(p => ({...p})); // Shallow copy of piece objects is enough for simple props
-        copy.freeRects = this.freeRects.map(r => r.clone());
-        copy.offcuts = this.offcuts.map(o => o.clone());
-        copy.wasteRects = this.wasteRects.map(o => o.clone());
-        copy.material = this.material;
-        copy.cutCount = this.cutCount;
-        return copy;
-    }
-
-    get utilization() {
-        const used = this.pieces.reduce((sum, p) => sum + (p.width * p.height), 0);
-        return (used / (this.width * this.height)) * 100;
-    }
-
-    get waste() {
-        const used = this.pieces.reduce((sum, p) => sum + (p.width * p.height), 0);
-        return (this.width * this.height) - used;
+        // Renseignés une fois par _finalizePanel. Données brutes et non getters, pour
+        // la même raison que Rect.area — et parce que _isBetter compare l'utilisation
+        // de chaque panneau à presque chaque itération.
+        this.usedArea = 0;
+        this.utilization = 0;
+        this.waste = width * height;
     }
 }
 
@@ -98,7 +115,7 @@ class PanelSolution {
    3. BINARY TREE PACKER
    ========================================= */
 class BinaryTreePacker {
-    constructor(plaqueDim, grainEnabled) {
+    constructor(plaqueDim, grainEnabled, minOffcutArea = CONFIG.algo.minOffcutArea) {
         this.binWidth = plaqueDim.width;
         this.binHeight = plaqueDim.height;
         this.kerf = plaqueDim.kerf || 0;
@@ -106,6 +123,9 @@ class BinaryTreePacker {
         // grainEnabled = false means we can rotate
         this.grainEnabled = grainEnabled;
         this.allowRotation = !grainEnabled;
+        // Passé explicitement : dans le worker, CONFIG est une copie neuve qui ignore
+        // le réglage « chute mini » saisi dans l'interface.
+        this.minOffcutArea = minOffcutArea;
     }
 
     /**
@@ -120,7 +140,7 @@ class BinaryTreePacker {
      */
     solve(pieces, { preserveOrder = false } = {}) {
         const queue = preserveOrder
-            ? [...pieces]
+            ? pieces
             : [...pieces].sort((a, b) => (b.longueur * b.largeur) - (a.longueur * a.largeur));
 
         const panels = [];
@@ -159,35 +179,40 @@ class BinaryTreePacker {
         // Best Short Side Fit (BSSF) Strategy
         // We search ALL free rects and choose the one that minimizes the shorter leftover side.
         // This packs pieces more tightly than First Fit.
-        
+
         let bestScore = Number.MAX_VALUE;
         let bestFit = null;
+        const pieceArea = piece.longueur * piece.largeur;
 
         for (let i = 0; i < freeRects.length; i++) {
             const r = freeRects[i];
-            
+
+            // Aucune orientation ne peut tenir dans un rect d'aire inférieure : un test
+            // en O(1) qui coupe court aux quatre comparaisons de dimensions ci-dessous.
+            if (r.area < pieceArea) continue;
+
             // 1. Try Normal Orientation
             if (piece.longueur <= r.w && piece.largeur <= r.h) {
-                const leftoverX = Math.abs(r.w - piece.longueur);
-                const leftoverY = Math.abs(r.h - piece.largeur);
-                const score = Math.min(leftoverX, leftoverY);
-                
+                const score = Math.min(r.w - piece.longueur, r.h - piece.largeur);
+
                 if (score < bestScore) {
                     bestScore = score;
                     bestFit = { rectIdx: i, w: piece.longueur, h: piece.largeur, rotated: false };
+                    // Score nul = une dimension tombe pile. Rien ne peut faire mieux,
+                    // inutile de balayer les rects restants.
+                    if (score === 0) return bestFit;
                 }
             }
-            
+
             // 2. Try Rotated
             // Only if rotation is allowed
             if (this.allowRotation && piece.largeur <= r.w && piece.longueur <= r.h) {
-                const leftoverX = Math.abs(r.w - piece.largeur);
-                const leftoverY = Math.abs(r.h - piece.longueur);
-                const score = Math.min(leftoverX, leftoverY);
-                
+                const score = Math.min(r.w - piece.largeur, r.h - piece.longueur);
+
                 if (score < bestScore) {
                     bestScore = score;
                     bestFit = { rectIdx: i, w: piece.largeur, h: piece.longueur, rotated: true };
+                    if (score === 0) return bestFit;
                 }
             }
         }
@@ -196,7 +221,7 @@ class BinaryTreePacker {
 
     _placePiece(panel, piece, fit) {
         const rect = panel.freeRects[fit.rectIdx];
-        
+
         // Record placement
         panel.pieces.push(new PlacedPiece(piece, rect.x, rect.y, fit.w, fit.h, fit.rotated));
 
@@ -227,10 +252,20 @@ class BinaryTreePacker {
         // Two ways to extend the cuts across the leftover space:
         //   Option A (vertical cut runs full height): right = extraW x rect.h, top = w x extraH
         //   Option B (horizontal cut runs full width): right = extraW x h, top = rect.w x extraH
-        // Keep whichever yields the largest single free rectangle, so big reusable offcuts survive.
-        const optionA_Max = Math.max(extraW * rect.h, w * extraH);
-        const optionB_Max = Math.max(extraW * h, rect.w * extraH);
-        const splitVertically = optionA_Max > optionB_Max;
+        const areaA1 = extraW * rect.h, areaA2 = w * extraH;
+        const areaB1 = extraW * h,      areaB2 = rect.w * extraH;
+
+        // Critère principal : l'aire réellement RÉUTILISABLE, pas l'aire brute. Une chute
+        // sous le seuil ne vaut rien en atelier, donc deux morceaux exploitables valent
+        // mieux qu'un gros plus un confetti. Départage par le plus gros morceau, qui est
+        // la chute la plus facile à recaser.
+        const usable = (a) => (a >= this.minOffcutArea ? a : 0);
+        const usableA = usable(areaA1) + usable(areaA2);
+        const usableB = usable(areaB1) + usable(areaB2);
+
+        const splitVertically = usableA !== usableB
+            ? usableA > usableB
+            : Math.max(areaA1, areaA2) > Math.max(areaB1, areaB2);
 
         if (splitVertically) {
              if (extraW > 0) panel.freeRects.push(new Rect(rect.x + w + kerf, rect.y, extraW, rect.h));
@@ -245,9 +280,15 @@ class BinaryTreePacker {
         // Leftovers split in two: big enough to be worth keeping (offcuts) and the rest (waste).
         // Both are kept so the renderer can account for every square millimetre of the panel —
         // an unpainted area reads as a bug rather than as scrap.
-        panel.offcuts = panel.freeRects.filter(r => r.area >= CONFIG.algo.minOffcutArea);
-        panel.wasteRects = panel.freeRects.filter(r => r.area < CONFIG.algo.minOffcutArea);
+        panel.offcuts = panel.freeRects.filter(r => r.area >= this.minOffcutArea);
+        panel.wasteRects = panel.freeRects.filter(r => r.area < this.minOffcutArea);
         panel.freeRects = [];
+
+        let used = 0;
+        for (const p of panel.pieces) used += p.width * p.height;
+        panel.usedArea = used;
+        panel.utilization = (used / (panel.width * panel.height)) * 100;
+        panel.waste = (panel.width * panel.height) - used;
     }
 }
 
@@ -267,8 +308,18 @@ class OptimizerEngine {
     _groupPieces(pieces) {
         const groups = {};
         pieces.forEach(p => {
-            const k = `${p.epaisseur}-${p.finition}`;
-            if (!groups[k]) groups[k] = { id: k, thickness: p.epaisseur, finish: p.finition, pieces: [] };
+            // Séparateur NUL : avec un tiret, l'épaisseur 19 + finition "A-B" et
+            // l'épaisseur "19-A" + finition "B" tombaient dans le même groupe.
+            const k = `${p.epaisseur}\u0000${p.finition}`;
+            if (!groups[k]) {
+                groups[k] = {
+                    id: k,
+                    thickness: p.epaisseur,
+                    finish: p.finition,
+                    label: `${p.epaisseur}mm ${p.finition}`,
+                    pieces: []
+                };
+            }
             groups[k].pieces.push(p);
         });
         return Object.values(groups);
@@ -298,11 +349,23 @@ class OptimizerEngine {
             return [...order].sort(criteria[(iteration / 25) % criteria.length]);
         }
 
+        if (order.length < 2) return [...order];
+
+        // Une liste de menuiserie est pleine de doublons, et échanger deux pièces de mêmes
+        // cotes redonne exactement le même calpinage : itération brûlée pour rien. On
+        // retente quelques fois avant d'accepter une mutation neutre.
+        for (let attempt = 0; attempt < 4; attempt++) {
+            const next = this._mutateOrder(order);
+            if (!this._sameShapeOrder(order, next)) return next;
+        }
+        return this._mutateOrder(order);
+    }
+
+    _mutateOrder(order) {
         const next = [...order];
         const n = next.length;
-        if (n < 2) return next;
-
         const mutations = 1 + Math.floor(Math.random() * 3);
+
         for (let m = 0; m < mutations; m++) {
             const roll = Math.random();
             if (roll < 0.5) {
@@ -324,6 +387,14 @@ class OptimizerEngine {
             }
         }
         return next;
+    }
+
+    /** Deux ordres qui alignent les mêmes cotes produisent le même calpinage. */
+    _sameShapeOrder(a, b) {
+        for (let i = 0; i < a.length; i++) {
+            if (a[i].longueur !== b[i].longueur || a[i].largeur !== b[i].largeur) return false;
+        }
+        return true;
     }
 
     /** True when a piece cannot fit the panel in any allowed orientation. */
@@ -354,11 +425,19 @@ class OptimizerEngine {
      * or once every group has provably reached its minimum panel count.
      */
     async start(pieces, plaque, options, onProgress, onComplete) {
+        if (this.isRunning) return;
         this.isRunning = true;
         this.stopRequested = false;
 
+        // Réglages transmis par l'appelant : dans un worker, CONFIG est une copie neuve
+        // qui n'a jamais vu les valeurs saisies dans l'interface.
+        const minOffcutArea = Number.isFinite(options.minOffcutArea)
+            ? options.minOffcutArea : CONFIG.algo.minOffcutArea;
+        const yieldInterval = Number.isFinite(options.yieldInterval)
+            ? options.yieldInterval : CONFIG.algo.yieldInterval;
+
         // 1. Initial Setup
-        const packer = new BinaryTreePacker(plaque, options.grainEnabled);
+        const packer = new BinaryTreePacker(plaque, options.grainEnabled, minOffcutArea);
         const groups = this._groupPieces(pieces);
 
         // Store best solutions per group, plus the piece order that produced them —
@@ -370,7 +449,7 @@ class OptimizerEngine {
             const initial = packer.solve(order, { preserveOrder: true });
             // Ensure material metadata is present from the start
             initial.panels.forEach(p => {
-                p.material = { thickness: g.thickness, finish: g.finish, label: g.id };
+                p.material = { thickness: g.thickness, finish: g.finish, label: g.label };
             });
             groupBestPanels[g.id] = initial;
             groupBestOrder[g.id] = order;
@@ -381,16 +460,17 @@ class OptimizerEngine {
         let lastYieldTime = startTime;
         let lastImprovementTime = startTime;
         let iteration = 0;
+        let improvements = 0;
 
         // Once every group sits at its theoretical minimum, the panel count can no longer be
         // improved — we keep polishing offcuts for a short grace period instead of burning
         // the full stability timeout on a result we already know is optimal.
         const bestCases = {};
         groups.forEach(g => { bestCases[g.id] = this._bestCase(g, plaque, !options.grainEnabled); });
+        const atPanelBound = (g) => groupBestPanels[g.id].panels.length <= bestCases[g.id].minPanels;
         const allGroupsOptimal = () => groups.every(g => {
             const best = groupBestPanels[g.id];
-            const target = bestCases[g.id];
-            return best.unplaced.length <= target.minUnplaced && best.panels.length <= target.minPanels;
+            return best.unplaced.length <= bestCases[g.id].minUnplaced && atPanelBound(g);
         });
         let optimalSince = allGroupsOptimal() ? startTime : null;
 
@@ -421,10 +501,10 @@ class OptimizerEngine {
                 }
 
                 // Yield to UI
-                if (currentTime - lastYieldTime > CONFIG.algo.yieldInterval) {
-                    await new Promise(r => setTimeout(r, 0));
+                if (currentTime - lastYieldTime > yieldInterval) {
+                    await yieldToEventLoop();
                     lastYieldTime = performance.now();
-                    
+
                     // Report Progress
                     // We estimate progress based on time, as we don't have a fixed number of iterations
                     // But we also show "Stabilization" progress if we are close to stopping early
@@ -448,8 +528,16 @@ class OptimizerEngine {
 
                 let improvedGlobal = false;
 
+                // Tant qu'un groupe peut encore perdre un panneau entier, l'effort va en
+                // priorité sur lui : brasser un groupe déjà à sa borne ne peut plus
+                // qu'affiner ses chutes. Une itération sur cinq reste ouverte à tous pour
+                // que ce raffinage ne meure pas de faim.
+                const someGroupBelowBound = groups.some(g => !atPanelBound(g));
+
                 // Optimize each group
                 for (const group of groups) {
+                    if (someGroupBelowBound && atPanelBound(group) && iteration % 5 !== 0) continue;
+
                     // Local search: mutate the order that produced the current best packing.
                     const candidateOrder = this._perturb(groupBestOrder[group.id], iteration);
 
@@ -461,18 +549,20 @@ class OptimizerEngine {
                     if (this._isBetter(candidate, groupBestPanels[group.id])) {
                         // Re-inject metadata (lost during packing usually)
                         candidate.panels.forEach(p => {
-                            p.material = { thickness: group.thickness, finish: group.finish, label: group.id };
+                            p.material = { thickness: group.thickness, finish: group.finish, label: group.label };
                         });
-                        console.log(`New best for group ${group.id}: ${candidate.panels.length} panels`);
                         groupBestPanels[group.id] = candidate;
                         groupBestOrder[group.id] = candidateOrder;
                         improvedGlobal = true;
+                        improvements++;
                         lastImprovementTime = performance.now();
                     }
                 }
 
-                if (improvedGlobal || optimalSince === null) {
-                    optimalSince = allGroupsOptimal() ? performance.now() : null;
+                // Ne peut basculer que sur une amélioration : inutile de rappeler
+                // allGroupsOptimal() à vide le reste du temps.
+                if (improvedGlobal) {
+                    optimalSince = allGroupsOptimal() ? performance.now() : optimalSince;
                 }
             }
         } catch (err) {
@@ -481,14 +571,17 @@ class OptimizerEngine {
 
         // 3. Finalize
         this.isRunning = false;
-        
+
         // Reconstruct Global Solution
         const best = Object.values(groupBestPanels);
         const allPanels = best.flatMap(b => b.panels);
         const allUnplaced = best.flatMap(b => b.unplaced);
         allPanels.forEach((p, i) => p.id = i + 1);
 
-        const finalResult = this._formatResult(allPanels, allUnplaced);
+        const elapsedMs = performance.now() - startTime;
+        console.log(`Optimization done: ${iteration} iterations, ${improvements} improvements, ${Math.round(elapsedMs)} ms.`);
+
+        const finalResult = this._formatResult(allPanels, allUnplaced, iteration, elapsedMs);
         onComplete(finalResult);
     }
 
@@ -532,7 +625,7 @@ class OptimizerEngine {
         return getMinUtil(candidate.panels) < getMinUtil(currentBest.panels);
     }
 
-    _formatResult(panels, unplaced) {
+    _formatResult(panels, unplaced, iterations = 0, elapsedMs = 0) {
         const globalUtil = panels.length > 0
             ? panels.reduce((acc, p) => acc + p.utilization, 0) / panels.length
             : 0;
@@ -548,12 +641,16 @@ class OptimizerEngine {
                 globalUtilization: globalUtil,
                 totalCuts: totalCuts,
                 unplacedCount: unplaced.length,
+                iterations: iterations,
+                elapsedMs: Math.round(elapsedMs),
                 timestamp: new Date().toISOString()
             }
         };
     }
 }
 
-// Expose to global scope for the interface to use
-window.OptimizerEngine = OptimizerEngine;
-window.CONFIG = CONFIG; // Expose config if needed by UI
+// `self` et non `window` : ce fichier est aussi chargé par worker.js, où `window`
+// n'existe pas. Dans la page, `self === window`.
+self.OptimizerEngine = OptimizerEngine;
+self.BinaryTreePacker = BinaryTreePacker;
+self.CONFIG = CONFIG; // Expose config if needed by UI

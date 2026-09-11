@@ -181,15 +181,6 @@ h1 {
     width: 100%;
 }
 
-.stats {
-    font-family: 'Space Grotesk', monospace;
-    font-size: 14px;
-    color: var(--accent-highlight);
-}
-
-.stats span {
-    margin-left: var(--spacing-md);
-}
 
 .tech-line {
     height: 2px;
@@ -373,12 +364,15 @@ tr:last-child td {
     max-width: 600px;
 }
 
+/* Valeurs effectives : une seconde règle .panel-nav plus bas dans le fichier
+   écrasait silencieusement gap et justify-content. Tout est regroupé ici. */
 .panel-nav {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 20px;
+    gap: 10px;
     margin-bottom: var(--spacing-sm);
+    font-family: 'Space Grotesk', monospace;
     font-size: 16px;
     font-weight: 600;
     color: var(--text-main);
@@ -430,8 +424,6 @@ canvas {
     background: rgba(255,255,255,0.05);
 }
 
-/* Updated Stats (removed old) */
-.stats { display: none; }
 
 /* Export */
 .actions {
@@ -474,26 +466,6 @@ footer a:hover {
 }
 
 /* Responsive */
-@media (max-width: 768px) {
-    body {
-        cursor: default;
-    }
-    
-    h1 {
-        font-size: 32px;
-    }
-    
-    .header-row {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: var(--spacing-sm);
-    }
-    
-    .stats span {
-        margin-left: 0;
-        margin-right: var(--spacing-md);
-    }
-}
 
 /* Modal */
 .modal {
@@ -587,13 +559,6 @@ footer a:hover {
 .tech-select option {
     background-color: var(--bg-color);
     color: var(--text-main);
-}
-
-.panel-nav {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-family: 'Space Grotesk', monospace;
 }
 
 .nav-btn {
@@ -901,12 +866,6 @@ footer a:hover {
 }
 
 /* Responsive Progress Bar */
-@media (max-width: 768px) {
-    .progress-bar-container {
-        height: 8px; /* Thicker on mobile for better visibility */
-        border-radius: 4px;
-    }
-}
 
 .progress-bar {
     width: 0%;
@@ -1053,6 +1012,27 @@ footer a:hover {
 
 /* Mobile Styles */
 @media (max-width: 768px) {
+    /* Blocs mobiles regroupes ici : ils etaient eclates en trois @media
+       identiques. L ordre relatif est conserve — .header-row est redefini
+       plus bas dans ce meme bloc et doit continuer a gagner. */
+    body {
+        cursor: default;
+    }
+
+    h1 {
+        font-size: 32px;
+    }
+
+    .header-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--spacing-sm);
+    }
+
+    .progress-bar-container {
+        height: 8px; /* Thicker on mobile for better visibility */
+        border-radius: 4px;
+    }
     .burger-menu {
         display: flex;
     }
